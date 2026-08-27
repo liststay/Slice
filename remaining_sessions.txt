@@ -1,0 +1,30 @@
+# Remaining truncated sessions that still need moov recovery.
+# Already recovered (do not re-run):
+#   cp_0001/20260825/session_20260825_170413
+#   cp_0001/20260825/session_20260825_174223
+#   cp_0002/20260825/session_20260825_154645
+#   cs_0001/20260820/session_20260819_162034
+# cp_0003/20260825/session_20260825_152902 has left recovered; right/bright/bleft still needed.
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0003/20260825/session_20260825_152902
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0003/20260825/session_20260825_174704
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0005/20260825/session_20260825_162546
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0005/20260825/session_20260825_170728
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260824/session_20260824_135303
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260824/session_20260824_142629
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260824/session_20260824_155402
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260825/session_20260825_154441
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260825/session_20260825_165248
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cp_0006/20260825/session_20260825_173205
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260819/session_20260819_140904
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260819/session_20260819_155328
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260820/session_20260819_161729
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260820/session_20260820_094810
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260820/session_20260820_123113
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260821/session_20260821_120105
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260821/session_20260821_124025
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260822/session_20260822_134911
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260824/session_20260824_133837
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260825/session_20260824_131205
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260825/session_20260824_133837
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260825/session_20260824_144551
+/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260825/session_20260824_155046

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light; }
+    html, body { margin: 0; padding: 0; font-family: "Source Sans Pro", sans-serif; color: #31333F; overflow: hidden; }
+    .stage {
+      width: 100%;
+      background: #111;
+      border-radius: 8px;
+      overflow: hidden;
+      line-height: 0;
+    }
+    video {
+      width: 100%;
+      height: auto;
+      min-height: 520px;
+      max-height: none;
+      display: block;
+      background: #111;
+      object-fit: contain;
+    }
+    .bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; line-height: 1.4; }
+    button {
+      flex: 1; min-width: 72px; padding: 8px 10px; cursor: pointer;
+      border-radius: 8px; border: 1px solid #d3d3d3; background: #fff; font-size: 14px;
+    }
+    button:hover { border-color: #ff4b4b; color: #ff4b4b; }
+    .time { font-variant-numeric: tabular-nums; font-size: 14px; min-width: 168px; }
+    .hint { margin-top: 6px; font-size: 12px; color: #808495; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <video id="v" controls preload="metadata"></video>
+  </div>
+  <div class="bar">
+    <button id="back15" type="button">−15s</button>
+    <button id="back" type="button">−1s</button>
+    <button id="t0" type="button">设为起点 t0</button>
+    <button id="t1" type="button">设为终点 t1</button>
+    <button id="fwd" type="button">+1s</button>
+    <button id="fwd15" type="button">+15s</button>
+    <div class="time" id="cur">播放进度 00:00.000</div>
+  </div>
+  <div class="hint">拖动进度条后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
+  <script>
+    function send(type, data) {
+      const msg = Object.assign({ isStreamlitMessage: true, type: type }, data);
+      window.parent.postMessage(msg, "*");
+    }
+    function ready() { send("streamlit:componentReady", { apiVersion: 1 }); }
+    function chromeHeight() {
+      const bar = document.querySelector(".bar");
+      const hint = document.querySelector(".hint");
+      return (bar ? bar.offsetHeight : 48) + (hint ? hint.offsetHeight : 24) + 16;
+    }
+    function setHeight() {
+      const width = Math.max(document.body.clientWidth || 0, 480);
+      let videoH = Math.round(width * 9 / 16);
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        videoH = Math.round(width * video.videoHeight / video.videoWidth);
+      }
+      let cap = 900;
+      try {
+        cap = Math.floor((window.parent.innerHeight || 900) * 0.78);
+      } catch (e) {}
+      videoH = Math.min(Math.max(videoH, 520), cap);
+      video.style.minHeight = videoH + "px";
+      video.style.height = videoH + "px";
+      send("streamlit:setFrameHeight", { height: videoH + chromeHeight() });
+    }
+    function toPython(value) {
+      send("streamlit:setComponentValue", { value: value, dataType: "json" });
+    }
+    function fmt(t) {
+      if (!Number.isFinite(t) || t < 0) t = 0;
+      const m = Math.floor(t / 60);
+      const s = t - m * 60;
+      return String(m).padStart(2, "0") + ":" + s.toFixed(3).padStart(6, "0");
+    }
+
+    const video = document.getElementById("v");
+    const cur = document.getElementById("cur");
+
+    function tick() {
+      cur.textContent = "播放进度 " + fmt(video.currentTime || 0);
+    }
+    video.addEventListener("timeupdate", tick);
+    video.addEventListener("seeked", tick);
+    video.loop = false;
+    let pinEndUntil = 0;
+    function stayAtEnd() {
+      if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+      video.pause();
+      video.currentTime = Math.max(0, video.duration - 0.04);
+      tick();
+    }
+    video.addEventListener("ended", () => {
+      pinEndUntil = Date.now() + 500;
+      stayAtEnd();
+    });
+    video.addEventListener("seeked", () => {
+      if (Date.now() < pinEndUntil && video.currentTime < 0.2) {
+        stayAtEnd();
+      }
+    });
+    video.addEventListener("play", () => {
+      pinEndUntil = 0;
+    });
+    video.addEventListener("error", () => {
+      const err = video.error;
+      const code = err ? err.code : 0;
+      cur.textContent = "视频加载失败（code " + code + "）。请重启 Streamlit 后刷新页面。";
+    });
+    video.addEventListener("loadedmetadata", () => { tick(); setHeight(); });
+    video.addEventListener("loadeddata", setHeight);
+    window.addEventListener("resize", setHeight);
+
+    function skipBy(dt) {
+      const dur = Number.isFinite(video.duration) ? video.duration : 1e9;
+      video.currentTime = Math.min(dur, Math.max(0, (video.currentTime || 0) + dt));
+      tick();
+    }
+    document.getElementById("t0").onclick = () => {
+      toPython({ kind: "t0", t: video.currentTime || 0, n: Date.now() });
+    };
+    document.getElementById("t1").onclick = () => {
+      toPython({ kind: "t1", t: video.currentTime || 0, n: Date.now() });
+    };
+    document.getElementById("back15").onclick = () => skipBy(-15);
+    document.getElementById("back").onclick = () => skipBy(-1);
+    document.getElementById("fwd").onclick = () => skipBy(1);
+    document.getElementById("fwd15").onclick = () => skipBy(15);
+
+    window.addEventListener("message", (event) => {
+      if (!event.data || event.data.type !== "streamlit:render") return;
+      const args = event.data.args || {};
+      if (!args.file || !args.port) { setHeight(); return; }
+      const rawHost = window.location.hostname || "127.0.0.1";
+      const host = rawHost === "localhost" ? "127.0.0.1" : rawHost;
+      const url = "http://" + host + ":" + args.port + "/" + args.file + "?sid=" + encodeURIComponent(args.sid || "");
+      if (video.dataset.src !== url) {
+        video.dataset.src = url;
+        video.src = url;
+      }
+      setHeight();
+    });
+
+    ready();
+    setHeight();
+  </script>
+</body>
+</html>
