@@ -90,6 +90,17 @@
     video.addEventListener("timeupdate", tick);
     video.addEventListener("seeked", tick);
     video.loop = false;
+    let appliedSeekN = null;
+    function applySeek(t) {
+      if (!Number.isFinite(t) || t < 0) return;
+      const go = () => {
+        const dur = Number.isFinite(video.duration) ? video.duration : t;
+        video.currentTime = Math.min(Math.max(0, t), Math.max(0, dur));
+        tick();
+      };
+      if (video.readyState >= 1) go();
+      else video.addEventListener("loadedmetadata", go, { once: true });
+    }
     let pinEndUntil = 0;
     function stayAtEnd() {
       if (!Number.isFinite(video.duration) || video.duration <= 0) return;
@@ -144,6 +155,14 @@
       if (video.dataset.src !== url) {
         video.dataset.src = url;
         video.src = url;
+        appliedSeekN = null;
+      }
+      const seek = Number(args.seek);
+      const seekN = args.seek_n;
+      const fresh = appliedSeekN === null;
+      if (Number.isFinite(seek) && seek >= 0 && (fresh || seekN !== appliedSeekN)) {
+        appliedSeekN = seekN === undefined || seekN === null ? 0 : seekN;
+        applySeek(seek);
       }
       setHeight();
     });

@@ -68,6 +68,14 @@ def init_state() -> None:
         st.session_state.quality_input = "good"
     if "note_input" not in st.session_state:
         st.session_state.note_input = ""
+    if "player_seek_t" not in st.session_state:
+        st.session_state.player_seek_t = 0.0
+    if "player_seek_n" not in st.session_state:
+        st.session_state.player_seek_n = 0
+    if "add_errors" not in st.session_state:
+        st.session_state.add_errors = []
+    if "flash" not in st.session_state:
+        st.session_state.flash = ""
 
 
 def _start_edit(segment_id: str) -> None:
@@ -85,6 +93,56 @@ def _start_edit(segment_id: str) -> None:
 
 def _cancel_edit() -> None:
     st.session_state.editing_id = None
+
+
+def _keep_player_at(t: float) -> None:
+    st.session_state.player_seek_t = max(0.0, float(t))
+    st.session_state.player_seek_n = int(st.session_state.get("player_seek_n") or 0) + 1
+
+
+def _submit_segment() -> None:
+    duration = float(st.session_state.get("_duration") or 0.0)
+    t0 = float(st.session_state.get("t0_input") or 0.0)
+    t1 = float(st.session_state.get("t1_input") or 0.0)
+    action_zh = str(st.session_state.get("action_zh_input") or "").strip()
+    quality = st.session_state.get("quality_input") or "good"
+    note = str(st.session_state.get("note_input") or "").strip()
+    editing_id = st.session_state.get("editing_id")
+    seg = Segment(
+        action_zh=action_zh,
+        t0=t0,
+        t1=t1,
+        quality=quality,  # type: ignore[arg-type]
+        note=note,
+    )
+    if editing_id:
+        seg.segment_id = str(editing_id)
+    errs = seg.validate()
+    if t1 > duration + 0.05:
+        errs.append("终点超出视频时长")
+    if errs:
+        st.session_state.add_errors = errs
+        return
+    st.session_state.add_errors = []
+    if editing_id:
+        updated = False
+        for j, d in enumerate(st.session_state.segments):
+            if d["segment_id"] == editing_id:
+                st.session_state.segments[j] = seg.to_dict()
+                updated = True
+                break
+        if not updated:
+            st.session_state.add_errors = ["未找到要编辑的片段，可能已被删除"]
+            return
+        st.session_state.editing_id = None
+        st.session_state.flash = f"已更新：{seg.action_zh} [{t0:.2f}-{t1:.2f}]"
+    else:
+        st.session_state.segments.append(seg.to_dict())
+        st.session_state.flash = f"已添加：{seg.action_zh} [{t0:.2f}-{t1:.2f}]"
+    _keep_player_at(t1)
+    path = Path(st.session_state.get("loaded_session_path") or "")
+    if path:
+        save_draft(path, path.name, list(st.session_state.segments), _form_state())
 
 
 def _delete_segment(segment_id: str) -> None:
@@ -228,6 +286,12 @@ def main() -> None:
             st.session_state.note_input = str(form.get("note") or "")
             st.session_state.editing_id = form.get("editing_id")
             st.session_state.last_player_n = None
+            st.session_state.player_seek_t = 0.0
+            st.session_state.player_seek_n = int(
+                st.session_state.get("player_seek_n") or 0
+            ) + 1
+            st.session_state.add_errors = []
+            st.session_state.flash = ""
 
         st.divider()
         st.markdown(f"**路径**: `{session.path}`")
@@ -251,6 +315,7 @@ def main() -> None:
         )
 
     duration = max(session.duration_sec, 0.1)
+    st.session_state._duration = duration
     video_path = session.video_path(play_cam)
 
     live_exported = sum(1 for d in st.session_state.segments if d.get("exported"))
@@ -271,6 +336,8 @@ def main() -> None:
                 file=f"{play_cam}.mp4",
                 sid=session.session_id,
                 port=PORT,
+                seek=float(st.session_state.get("player_seek_t") or 0.0),
+                seek_n=int(st.session_state.get("player_seek_n") or 0),
                 key="cutter_player",
             )
             if (
@@ -280,6 +347,7 @@ def main() -> None:
                 st.session_state.last_player_n = event.get("n")
                 t = float(event.get("t") or 0.0)
                 t = min(max(0.0, t), float(duration))
+                st.session_state.player_seek_t = t
                 if event.get("kind") == "t0":
                     st.session_state.t0_input = t
                 elif event.get("kind") == "t1":
@@ -335,41 +403,17 @@ def main() -> None:
         note = st.text_area("备注", height=80, key="note_input")
 
         save_label = "保存修改" if editing_id else "加入片段列表"
-        if st.button(save_label, type="primary", use_container_width=True):
-            seg = Segment(
-                action_zh=action_zh.strip(),
-                t0=float(t0),
-                t1=float(t1),
-                quality=quality,  # type: ignore[arg-type]
-                note=note.strip(),
-            )
-            if editing_id:
-                seg.segment_id = str(editing_id)
-            errs = seg.validate()
-            if t1 > duration + 0.05:
-                errs.append("终点超出视频时长")
-            if errs:
-                for e in errs:
-                    st.error(e)
-            elif editing_id:
-                updated = False
-                for j, d in enumerate(st.session_state.segments):
-                    if d["segment_id"] == editing_id:
-                        st.session_state.segments[j] = seg.to_dict()
-                        updated = True
-                        break
-                if updated:
-                    st.session_state.editing_id = None
-                    _persist_session(session)
-                    st.success(f"已更新：{seg.action_zh} [{t0:.2f}-{t1:.2f}]")
-                    st.rerun()
-                else:
-                    st.error("未找到要编辑的片段，可能已被删除")
-            else:
-                st.session_state.segments.append(seg.to_dict())
-                _persist_session(session)
-                st.success(f"已添加：{seg.action_zh} [{t0:.2f}-{t1:.2f}]")
-                st.rerun()
+        st.button(
+            save_label,
+            type="primary",
+            use_container_width=True,
+            on_click=_submit_segment,
+        )
+        for e in st.session_state.get("add_errors") or []:
+            st.error(e)
+        if st.session_state.get("flash"):
+            st.success(st.session_state.flash)
+            st.session_state.flash = ""
         if editing_id:
             st.button("取消编辑", use_container_width=True, on_click=_cancel_edit)
 
@@ -454,8 +498,8 @@ def main() -> None:
                     d for d in segs if d.get("exported")
                 ]
                 st.session_state.editing_id = None
+                _keep_player_at(st.session_state.get("player_seek_t") or 0.0)
                 _persist_session(session)
-                st.rerun()
 
     st.divider()
     st.caption(
