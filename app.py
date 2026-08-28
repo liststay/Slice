@@ -21,11 +21,14 @@ from models import MAX_SEGMENT_SEC, Segment
 from session_loader import discover_sessions
 from workstate import (
     clear_draft,
+    clear_keep_whole,
     count_draft_unexported,
     count_exported,
     cut_status_label,
+    is_keep_whole,
     load_work,
     save_draft,
+    save_keep_whole,
 )
 
 DEFAULT_DATA_ROOT = "/media/adminpc1/新加卷K/baai_ego_task"
@@ -164,6 +167,9 @@ def _submit_segment() -> None:
     path = Path(st.session_state.get("loaded_session_path") or "")
     if path:
         save_draft(path, path.name, list(st.session_state.segments), _form_state())
+        if is_keep_whole(path):
+            clear_keep_whole(path)
+            _set_keep_whole_flag(path, False)
 
 
 def _delete_segment(segment_id: str) -> None:
@@ -207,8 +213,43 @@ def _persist_session(session) -> None:
         clear_draft(session.path)
 
 
+def _set_keep_whole_flag(path: Path, value: bool) -> None:
+    for s in st.session_state.get("session_list") or []:
+        if str(s.path) == str(path):
+            s.keep_whole = value
+            break
+
+
+def _mark_keep_whole() -> None:
+    path = Path(st.session_state.get("loaded_session_path") or "")
+    if not path:
+        st.session_state.add_errors = ["未加载 session"]
+        return
+    note = str(st.session_state.get("note_input") or "").strip()
+    save_keep_whole(path, path.name, note=note)
+    _set_keep_whole_flag(path, True)
+    st.session_state.add_errors = []
+    st.session_state.flash = "已标记：整段合格，无需切分（不复制视频）"
+
+
+def _unmark_keep_whole() -> None:
+    path = Path(st.session_state.get("loaded_session_path") or "")
+    if not path:
+        return
+    clear_keep_whole(path)
+    _set_keep_whole_flag(path, False)
+    st.session_state.flash = "已取消整段合格标记"
+
+
+def _rerun_app() -> None:
+    try:
+        st.rerun(scope="app")
+    except TypeError:
+        st.rerun()
+
+
 def _session_label(s) -> str:
-    extra = cut_status_label(s.exported_count, s.draft_count)
+    extra = cut_status_label(s.exported_count, s.draft_count, s.keep_whole)
     return (
         f"{s.session_id}  ({s.duration_sec:.1f}s, {s.frame_count}f)  {extra}"
     )
@@ -318,13 +359,28 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
     if editing_id:
         st.button("取消编辑", use_container_width=True, on_click=_cancel_edit)
 
+    if session.keep_whole:
+        st.success("已标记为整段合格，无需切分。")
+        if st.button("取消整段合格标记", use_container_width=True):
+            _unmark_keep_whole()
+            _rerun_app()
+    else:
+        if st.button(
+            "整段合格，无需切分",
+            use_container_width=True,
+            help="全程都是好数据、不需要切片。只在 divide/session_review.json 留下标记，不复制视频。",
+        ):
+            _mark_keep_whole()
+            _rerun_app()
+
     segs = st.session_state.segments
     pending = [d for d in segs if not d.get("exported")]
     exported = [d for d in segs if d.get("exported")]
     st.subheader("片段列表")
     if not segs:
         st.info(
-            "尚无片段。在右侧标注后点击「加入片段列表」。"
+            "尚无片段。全程合格、不需要切时点「整段合格，无需切分」；"
+            "否则在播放器上标区间后点「加入片段列表」。"
             "未导出的标注会自动保存，下次打开此 session 仍在。"
         )
         return
@@ -413,12 +469,13 @@ def main() -> None:
 
         st.caption(
             "已切分 "
-            f"{sum(1 for s in sessions if s.exported_count)} 个 · 有草稿 "
+            f"{sum(1 for s in sessions if s.exported_count)} 个 · 整段合格 "
+            f"{sum(1 for s in sessions if s.keep_whole)} 个 · 有草稿 "
             f"{sum(1 for s in sessions if s.draft_count)} 个 · 共 {len(sessions)} 个"
         )
         status = st.radio(
             "切分进度",
-            ["全部", "未处理", "有草稿", "已切分"],
+            ["全部", "未处理", "有草稿", "已切分", "整段合格"],
             horizontal=True,
             key="status_filter",
         )
@@ -439,11 +496,19 @@ def main() -> None:
         else:
             filtered = sessions
         if status == "未处理":
-            filtered = [s for s in filtered if s.exported_count == 0 and s.draft_count == 0]
+            filtered = [
+                s
+                for s in filtered
+                if s.exported_count == 0
+                and s.draft_count == 0
+                and not s.keep_whole
+            ]
         elif status == "有草稿":
             filtered = [s for s in filtered if s.draft_count > 0]
         elif status == "已切分":
             filtered = [s for s in filtered if s.exported_count > 0]
+        elif status == "整段合格":
+            filtered = [s for s in filtered if s.keep_whole]
 
         if not filtered:
             st.warning("没有匹配的 session_*，请改筛选条件。")
@@ -501,7 +566,9 @@ def main() -> None:
         live_draft = sum(
             1 for d in st.session_state.segments if not d.get("exported")
         )
-        st.markdown(f"**进度**: {cut_status_label(live_exported, live_draft)}")
+        st.markdown(
+            f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole)}"
+        )
         play_cam = st.selectbox(
             "播放相机（导出仍切 4 路）",
             session.cameras_present or ["left"],
@@ -516,7 +583,13 @@ def main() -> None:
 
     live_exported = sum(1 for d in st.session_state.segments if d.get("exported"))
     live_draft = sum(1 for d in st.session_state.segments if not d.get("exported"))
-    if live_exported or live_draft or session.exported_count:
+    if session.keep_whole:
+        st.info(
+            "此 session 已标记为**整段合格，无需切分**。"
+            "全程好数据，不导出切片；侧边栏可按「整段合格」筛选。"
+            "若之后仍要切段，加入片段列表会自动取消该标记。"
+        )
+    elif live_exported or live_draft or session.exported_count:
         st.info(
             f"此 session 已导出 **{max(live_exported, session.exported_count)}** 段，"
             f"未导出草稿 **{live_draft}** 段。关掉页面再打开会自动恢复，侧边栏可按「已切分 / 有草稿」筛选。"
@@ -542,6 +615,7 @@ def main() -> None:
     st.caption(
         f"切分日志：`{output_root / 'logs' / 'cut_history.jsonl'}` · "
         f"未导出草稿：`{output_root / 'draft_segments.json'}` · "
+        f"整段合格标记：`{output_root / 'session_review.json'}` · "
         "原 videos / timestamps / imu / audio / calibrations 不会被修改"
     )
     _persist_session(session)

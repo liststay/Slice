@@ -23,7 +23,11 @@ except Exception:
     pass
 
 from models import CAMERAS
-from workstate import count_draft_unexported, count_exported
+from workstate import (
+    count_draft_unexported,
+    count_exported,
+    is_keep_whole,
+)
 
 
 @dataclass
@@ -37,6 +41,7 @@ class SessionInfo:
     cameras_present: list[str] = field(default_factory=list)
     exported_count: int = 0
     draft_count: int = 0
+    keep_whole: bool = False
 
     @property
     def videos_dir(self) -> Path:
@@ -136,6 +141,7 @@ def load_session(session_path: Path | str) -> SessionInfo:
         cameras_present=cameras,
         exported_count=count_exported(path),
         draft_count=count_draft_unexported(path),
+        keep_whole=is_keep_whole(path),
     )
 
 

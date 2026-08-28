@@ -34,8 +34,65 @@ def count_draft_unexported(session_dir: Path) -> int:
     return sum(1 for d in data.get("segments") or [] if not d.get("exported"))
 
 
-def cut_status_label(exported_n: int, draft_n: int) -> str:
+REVIEW_FILENAME = "session_review.json"
+KEEP_WHOLE = "keep_whole"
+
+
+def review_path(session_dir: Path) -> Path:
+    return session_dir / "divide" / REVIEW_FILENAME
+
+
+def read_review(session_dir: Path) -> dict[str, Any] | None:
+    path = review_path(session_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def is_keep_whole(session_dir: Path) -> bool:
+    data = read_review(session_dir)
+    return bool(data) and data.get("status") == KEEP_WHOLE
+
+
+def save_keep_whole(
+    session_dir: Path,
+    session_id: str,
+    note: str = "",
+) -> Path:
+    path = review_path(session_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "session_id": session_id,
+        "status": KEEP_WHOLE,
+        "quality": "good",
+        "note": note,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def clear_keep_whole(session_dir: Path) -> None:
+    path = review_path(session_dir)
+    if path.is_file():
+        path.unlink()
+
+
+def cut_status_label(
+    exported_n: int, draft_n: int, keep_whole: bool = False
+) -> str:
     parts: list[str] = []
+    if keep_whole:
+        parts.append("整段合格")
     if exported_n:
         parts.append(f"已切分{exported_n}")
     if draft_n:
