@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /></head>
+<body>
+<script>
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+  }
+  function ready() { send("streamlit:componentReady", { apiVersion: 1 }); }
+  function toPython(value) {
+    send("streamlit:setComponentValue", { value: value, dataType: "json" });
+  }
+  function onMsg(event) {
+    const d = event.data;
+    if (!d || d.type !== "cutter-mark") return;
+    toPython({ kind: d.kind, t: d.t, n: d.n });
+  }
+  try { window.parent.addEventListener("message", onMsg); } catch (e) {}
+  try {
+    if (window.parent.parent && window.parent.parent !== window.parent) {
+      window.parent.parent.addEventListener("message", onMsg);
+    }
+  } catch (e) {}
+  ready();
+  send("streamlit:setFrameHeight", { height: 1 });
+</script>
+</body>
+</html>

@@ -46,15 +46,20 @@
   </div>
   <div class="hint">拖动进度条后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
   <script>
-    function send(type, data) {
-      const msg = Object.assign({ isStreamlitMessage: true, type: type }, data);
-      window.parent.postMessage(msg, "*");
+    const video = document.getElementById("v");
+    const cur = document.getElementById("cur");
+
+    function fmt(t) {
+      if (!Number.isFinite(t) || t < 0) t = 0;
+      const m = Math.floor(t / 60);
+      const s = t - m * 60;
+      return String(m).padStart(2, "0") + ":" + s.toFixed(3).padStart(6, "0");
     }
-    function ready() { send("streamlit:componentReady", { apiVersion: 1 }); }
-    function chromeHeight() {
-      const bar = document.querySelector(".bar");
-      const hint = document.querySelector(".hint");
-      return (bar ? bar.offsetHeight : 48) + (hint ? hint.offsetHeight : 24) + 16;
+    function tick() {
+      cur.textContent = "播放进度 " + fmt(video.currentTime || 0);
+    }
+    function send(type, data) {
+      window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
     }
     function setHeight() {
       const width = Math.max(document.body.clientWidth || 0, 480);
@@ -63,34 +68,26 @@
         videoH = Math.round(width * video.videoHeight / video.videoWidth);
       }
       let cap = 900;
-      try {
-        cap = Math.floor((window.parent.innerHeight || 900) * 0.78);
-      } catch (e) {}
+      try { cap = Math.floor((window.parent.innerHeight || 900) * 0.78); } catch (e) {}
       videoH = Math.min(Math.max(videoH, 520), cap);
       video.style.minHeight = videoH + "px";
       video.style.height = videoH + "px";
-      send("streamlit:setFrameHeight", { height: videoH + chromeHeight() });
+      const bar = document.querySelector(".bar");
+      const hint = document.querySelector(".hint");
+      const extra = (bar ? bar.offsetHeight : 48) + (hint ? hint.offsetHeight : 24) + 16;
+      send("streamlit:setFrameHeight", { height: videoH + extra });
     }
-    function toPython(value) {
-      send("streamlit:setComponentValue", { value: value, dataType: "json" });
+    function applySource(file, port, sid) {
+      if (!file || !port) return;
+      const rawHost = window.location.hostname || "127.0.0.1";
+      const host = rawHost === "localhost" ? "127.0.0.1" : rawHost;
+      const url = "http://" + host + ":" + port + "/" + file.replace(/^\//, "") +
+        "?sid=" + encodeURIComponent(sid || "");
+      if (video.dataset.src === url) return;
+      video.dataset.src = url;
+      video.dataset.retried = "";
+      video.src = url;
     }
-    function fmt(t) {
-      if (!Number.isFinite(t) || t < 0) t = 0;
-      const m = Math.floor(t / 60);
-      const s = t - m * 60;
-      return String(m).padStart(2, "0") + ":" + s.toFixed(3).padStart(6, "0");
-    }
-
-    const video = document.getElementById("v");
-    const cur = document.getElementById("cur");
-
-    function tick() {
-      cur.textContent = "播放进度 " + fmt(video.currentTime || 0);
-    }
-    video.addEventListener("timeupdate", tick);
-    video.addEventListener("seeked", tick);
-    video.loop = false;
-    let appliedSeekN = null;
     function applySeek(t) {
       if (!Number.isFinite(t) || t < 0) return;
       const go = () => {
@@ -101,45 +98,60 @@
       if (video.readyState >= 1) go();
       else video.addEventListener("loadedmetadata", go, { once: true });
     }
+    function mark(kind) {
+      const payload = {
+        type: "cutter-mark",
+        kind: kind,
+        t: video.currentTime || 0,
+        n: Date.now(),
+      };
+      window.parent.postMessage(payload, "*");
+    }
+    function skipBy(dt) {
+      const dur = Number.isFinite(video.duration) ? video.duration : 1e9;
+      video.currentTime = Math.min(dur, Math.max(0, (video.currentTime || 0) + dt));
+      tick();
+    }
+
+    video.loop = false;
+    video.addEventListener("timeupdate", tick);
+    video.addEventListener("seeked", tick);
     let pinEndUntil = 0;
-    function stayAtEnd() {
+    video.addEventListener("ended", () => {
+      pinEndUntil = Date.now() + 500;
       if (!Number.isFinite(video.duration) || video.duration <= 0) return;
       video.pause();
       video.currentTime = Math.max(0, video.duration - 0.04);
       tick();
-    }
-    video.addEventListener("ended", () => {
-      pinEndUntil = Date.now() + 500;
-      stayAtEnd();
     });
     video.addEventListener("seeked", () => {
-      if (Date.now() < pinEndUntil && video.currentTime < 0.2) {
-        stayAtEnd();
+      if (Date.now() < pinEndUntil && video.currentTime < 0.2 && Number.isFinite(video.duration)) {
+        video.currentTime = Math.max(0, video.duration - 0.04);
+        tick();
       }
     });
-    video.addEventListener("play", () => {
-      pinEndUntil = 0;
-    });
+    video.addEventListener("play", () => { pinEndUntil = 0; });
     video.addEventListener("error", () => {
       const err = video.error;
       const code = err ? err.code : 0;
+      if (code === 2 && video.dataset.src && video.dataset.retried !== "1") {
+        video.dataset.retried = "1";
+        const t = video.currentTime || 0;
+        const src = video.dataset.src;
+        window.setTimeout(() => {
+          video.src = src;
+          applySeek(t);
+        }, 200);
+        return;
+      }
       cur.textContent = "视频加载失败（code " + code + "）。请重启 Streamlit 后刷新页面。";
     });
     video.addEventListener("loadedmetadata", () => { tick(); setHeight(); });
     video.addEventListener("loadeddata", setHeight);
     window.addEventListener("resize", setHeight);
 
-    function skipBy(dt) {
-      const dur = Number.isFinite(video.duration) ? video.duration : 1e9;
-      video.currentTime = Math.min(dur, Math.max(0, (video.currentTime || 0) + dt));
-      tick();
-    }
-    document.getElementById("t0").onclick = () => {
-      toPython({ kind: "t0", t: video.currentTime || 0, n: Date.now() });
-    };
-    document.getElementById("t1").onclick = () => {
-      toPython({ kind: "t1", t: video.currentTime || 0, n: Date.now() });
-    };
+    document.getElementById("t0").onclick = () => mark("t0");
+    document.getElementById("t1").onclick = () => mark("t1");
     document.getElementById("back15").onclick = () => skipBy(-15);
     document.getElementById("back").onclick = () => skipBy(-1);
     document.getElementById("fwd").onclick = () => skipBy(1);
@@ -148,26 +160,10 @@
     window.addEventListener("message", (event) => {
       if (!event.data || event.data.type !== "streamlit:render") return;
       const args = event.data.args || {};
-      if (!args.file || !args.port) { setHeight(); return; }
-      const rawHost = window.location.hostname || "127.0.0.1";
-      const host = rawHost === "localhost" ? "127.0.0.1" : rawHost;
-      const url = "http://" + host + ":" + args.port + "/" + args.file + "?sid=" + encodeURIComponent(args.sid || "");
-      if (video.dataset.src !== url) {
-        video.dataset.src = url;
-        video.src = url;
-        appliedSeekN = null;
-      }
-      const seek = Number(args.seek);
-      const seekN = args.seek_n;
-      const fresh = appliedSeekN === null;
-      if (Number.isFinite(seek) && seek >= 0 && (fresh || seekN !== appliedSeekN)) {
-        appliedSeekN = seekN === undefined || seekN === null ? 0 : seekN;
-        applySeek(seek);
-      }
+      applySource(args.file, args.port, args.sid);
       setHeight();
     });
-
-    ready();
+    send("streamlit:componentReady", { apiVersion: 1 });
     setHeight();
   </script>
 </body>

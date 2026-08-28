@@ -28,7 +28,7 @@ from workstate import (
     save_draft,
 )
 
-DEFAULT_DATA_ROOT = "/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task"
+DEFAULT_DATA_ROOT = "/media/adminpc1/新加卷K/baai_ego_task"
 
 CUT_RULES_TITLE = "纳入数据集须同时满足（标「好」前看一眼）"
 CUT_RULES_MD = """
@@ -40,6 +40,10 @@ CUT_RULES_MD = """
 _player = components.declare_component(
     "cutter_player",
     path=str(Path(__file__).resolve().parent / "player_component"),
+)
+_bridge = components.declare_component(
+    "cutter_bridge",
+    path=str(Path(__file__).resolve().parent / "player_component" / "bridge"),
 )
 
 
@@ -95,9 +99,25 @@ def _cancel_edit() -> None:
     st.session_state.editing_id = None
 
 
-def _keep_player_at(t: float) -> None:
-    st.session_state.player_seek_t = max(0.0, float(t))
-    st.session_state.player_seek_n = int(st.session_state.get("player_seek_n") or 0) + 1
+def _apply_player_mark(event: object, duration: float) -> None:
+    """Update t0/t1 from the player without remounting the video iframe."""
+    if not isinstance(event, dict):
+        return
+    if event.get("n") == st.session_state.last_player_n:
+        return
+    st.session_state.last_player_n = event.get("n")
+    t = min(max(0.0, float(event.get("t") or 0.0)), float(duration))
+    kind = event.get("kind")
+    if kind == "t0":
+        st.session_state.t0_input = t
+        t1 = float(st.session_state.get("t1_input") or 0.0)
+        if t >= t1:
+            st.session_state.t1_input = min(duration, round(t + 0.033, 3))
+    elif kind == "t1":
+        st.session_state.t1_input = t
+        t0 = float(st.session_state.get("t0_input") or 0.0)
+        if t <= t0:
+            st.session_state.t0_input = max(0.0, round(t - 0.033, 3))
 
 
 def _submit_segment() -> None:
@@ -139,7 +159,8 @@ def _submit_segment() -> None:
     else:
         st.session_state.segments.append(seg.to_dict())
         st.session_state.flash = f"已添加：{seg.action_zh} [{t0:.2f}-{t1:.2f}]"
-    _keep_player_at(t1)
+    # Keep playhead, but do not bump seek_n: that remounts/aborts the large mp4.
+    st.session_state.player_seek_t = float(t1)
     path = Path(st.session_state.get("loaded_session_path") or "")
     if path:
         save_draft(path, path.name, list(st.session_state.segments), _form_state())
@@ -150,6 +171,9 @@ def _delete_segment(segment_id: str) -> None:
     st.session_state.segments = [d for d in segs if d["segment_id"] != segment_id]
     if st.session_state.editing_id == segment_id:
         st.session_state.editing_id = None
+    path = Path(st.session_state.get("loaded_session_path") or "")
+    if path:
+        save_draft(path, path.name, list(st.session_state.segments), _form_state())
 
 
 def _form_state() -> dict:
@@ -190,8 +214,180 @@ def _session_label(s) -> str:
     )
 
 
+def _segment_extra(d: dict) -> str:
+    note = str(d.get("note") or "").strip()
+    if note:
+        return note
+    out = str(d.get("output_dir") or "").strip()
+    if out:
+        return Path(out).name
+    return ""
+
+
+def _render_segment_row(i: int, d: dict) -> None:
+    sid = d["segment_id"]
+    is_editing = st.session_state.editing_id == sid
+    exported = bool(d.get("exported"))
+    c1, c2, c3, c4, c5 = st.columns([4, 1, 3, 1, 1])
+    with c1:
+        mark = " ← 编辑中" if is_editing else ""
+        st.write(
+            f"**{d['action_zh']}**{mark} · {_fmt_time(d['t0'])} → {_fmt_time(d['t1'])} "
+            f"({d['t1'] - d['t0']:.2f}s)"
+        )
+    with c2:
+        st.write("好" if d["quality"] == "good" else "坏")
+    with c3:
+        st.caption(_segment_extra(d))
+    with c4:
+        st.button(
+            "编辑",
+            key=f"edit_{sid}_{i}",
+            on_click=_start_edit,
+            args=(sid,),
+            disabled=is_editing or exported,
+        )
+    with c5:
+        st.button(
+            "删除",
+            key=f"del_{sid}_{i}",
+            on_click=_delete_segment,
+            args=(sid,),
+            disabled=exported,
+        )
+
+
+def _annotation_ui(session, duration: float, output_root: Path) -> None:
+    """Form + list; call this from the right-hand column so it sits beside the player."""
+    _apply_player_mark(_bridge(key="cutter_bridge"), duration)
+    st.caption(
+        f"已选区间：**{_fmt_time(float(st.session_state.t0_input))}** → "
+        f"**{_fmt_time(float(st.session_state.t1_input))}**"
+    )
+    editing_id = st.session_state.editing_id
+    st.subheader("编辑切分片段" if editing_id else "添加切分片段")
+    st.info(f"**切分标准**\n{CUT_RULES_MD}")
+    if editing_id:
+        st.caption("正在修改列表中的一段，保存后会覆盖原条目。")
+    t0 = st.number_input(
+        "起点 t0 (秒)",
+        min_value=0.0,
+        max_value=float(duration),
+        step=0.033,
+        format="%.3f",
+        key="t0_input",
+    )
+    t1 = st.number_input(
+        "终点 t1 (秒)",
+        min_value=0.0,
+        max_value=float(duration),
+        step=0.033,
+        format="%.3f",
+        key="t1_input",
+    )
+
+    dur = t1 - t0
+    st.write(f"片段时长: **{dur:.2f}s** / 上限 {MAX_SEGMENT_SEC:.0f}s")
+    if dur > MAX_SEGMENT_SEC:
+        st.error("超过 10 分钟上限")
+    elif dur <= 0:
+        st.warning("终点须大于起点")
+
+    st.text_input("中文动作名", placeholder="例如：拿杯子", key="action_zh_input")
+    st.radio(
+        "数据质量（两项都达标才选「好」）",
+        ["good", "bad"],
+        horizontal=True,
+        format_func=lambda x: "好" if x == "good" else "坏",
+        key="quality_input",
+    )
+    st.text_area("备注", height=80, key="note_input")
+
+    save_label = "保存修改" if editing_id else "加入片段列表"
+    st.button(
+        save_label,
+        type="primary",
+        use_container_width=True,
+        on_click=_submit_segment,
+    )
+    for e in st.session_state.get("add_errors") or []:
+        st.error(e)
+    flash = st.session_state.pop("flash", "")
+    if flash:
+        st.success(flash)
+    if editing_id:
+        st.button("取消编辑", use_container_width=True, on_click=_cancel_edit)
+
+    segs = st.session_state.segments
+    pending = [d for d in segs if not d.get("exported")]
+    exported = [d for d in segs if d.get("exported")]
+    st.subheader("片段列表")
+    if not segs:
+        st.info(
+            "尚无片段。在右侧标注后点击「加入片段列表」。"
+            "未导出的标注会自动保存，下次打开此 session 仍在。"
+        )
+        return
+
+    if pending:
+        st.markdown(f"**未导出草稿（{len(pending)}）**")
+        for i, d in enumerate(list(segs)):
+            if d.get("exported"):
+                continue
+            _render_segment_row(i, d)
+        e1, e2 = st.columns(2)
+        with e1:
+            export_label = f"导出未导出片段（{len(pending)}）"
+            if st.button(
+                export_label,
+                type="primary",
+                use_container_width=True,
+            ):
+                out_paths = []
+                progress = st.progress(0.0, text="导出中...")
+                try:
+                    done_n = 0
+                    for i, d in enumerate(segs):
+                        if d.get("exported"):
+                            continue
+                        seg = Segment.from_dict(d)
+                        out = export_segment(session, seg)
+                        st.session_state.segments[i]["exported"] = True
+                        st.session_state.segments[i]["output_dir"] = str(out)
+                        out_paths.append(out)
+                        done_n += 1
+                        progress.progress(
+                            done_n / max(len(pending), 1),
+                            text=f"已导出 {done_n}/{len(pending)}",
+                        )
+                    session.exported_count = count_exported(session.path)
+                    _persist_session(session)
+                    session.draft_count = count_draft_unexported(session.path)
+                    st.success(
+                        f"导出完成，共 {len(out_paths)} 段 → `{output_root}`"
+                    )
+                except Exception as exc:
+                    st.exception(exc)
+        with e2:
+            if st.button("清空未导出草稿", use_container_width=True):
+                st.session_state.segments = [d for d in segs if d.get("exported")]
+                st.session_state.editing_id = None
+                _persist_session(session)
+
+    if exported:
+        st.markdown(f"**已导出（{len(exported)}）**")
+        for i, d in enumerate(list(segs)):
+            if not d.get("exported"):
+                continue
+            _render_segment_row(i, d)
+
+
+st.set_page_config(page_title="视频切分工具", layout="wide")
+if hasattr(st, "fragment"):
+    _annotation_ui = st.fragment(_annotation_ui)
+
+
 def main() -> None:
-    st.set_page_config(page_title="视频切分工具", layout="wide")
     init_state()
 
     st.title("Ego 视频切分工具")
@@ -327,179 +523,20 @@ def main() -> None:
         )
 
     col_player, col_form = st.columns([7, 3], gap="large")
-
     with col_player:
         st.subheader(f"{play_cam}.mp4")
         if video_path.is_file():
             ensure_server(video_path.parent)
-            event = _player(
+            _player(
                 file=f"{play_cam}.mp4",
                 sid=session.session_id,
                 port=PORT,
-                seek=float(st.session_state.get("player_seek_t") or 0.0),
-                seek_n=int(st.session_state.get("player_seek_n") or 0),
                 key="cutter_player",
             )
-            if (
-                isinstance(event, dict)
-                and event.get("n") != st.session_state.last_player_n
-            ):
-                st.session_state.last_player_n = event.get("n")
-                t = float(event.get("t") or 0.0)
-                t = min(max(0.0, t), float(duration))
-                st.session_state.player_seek_t = t
-                if event.get("kind") == "t0":
-                    st.session_state.t0_input = t
-                elif event.get("kind") == "t1":
-                    st.session_state.t1_input = t
         else:
             st.error(f"找不到视频: {video_path}")
-
-        st.caption(
-            f"已选区间：**{_fmt_time(float(st.session_state.t0_input))}** → "
-            f"**{_fmt_time(float(st.session_state.t1_input))}**"
-        )
-
     with col_form:
-        editing_id = st.session_state.editing_id
-        st.subheader("编辑切分片段" if editing_id else "添加切分片段")
-        st.info(f"**切分标准**\n{CUT_RULES_MD}")
-        if editing_id:
-            st.caption("正在修改列表中的一段，保存后会覆盖原条目。")
-        t0 = st.number_input(
-            "起点 t0 (秒)",
-            min_value=0.0,
-            max_value=float(duration),
-            step=0.033,
-            format="%.3f",
-            key="t0_input",
-        )
-        t1 = st.number_input(
-            "终点 t1 (秒)",
-            min_value=0.0,
-            max_value=float(duration),
-            step=0.033,
-            format="%.3f",
-            key="t1_input",
-        )
-
-        dur = t1 - t0
-        st.write(f"片段时长: **{dur:.2f}s** / 上限 {MAX_SEGMENT_SEC:.0f}s")
-        if dur > MAX_SEGMENT_SEC:
-            st.error("超过 10 分钟上限")
-        elif dur <= 0:
-            st.warning("终点须大于起点")
-
-        action_zh = st.text_input(
-            "中文动作名", placeholder="例如：拿杯子", key="action_zh_input"
-        )
-        quality = st.radio(
-            "数据质量（两项都达标才选「好」）",
-            ["good", "bad"],
-            horizontal=True,
-            format_func=lambda x: "好" if x == "good" else "坏",
-            key="quality_input",
-        )
-        note = st.text_area("备注", height=80, key="note_input")
-
-        save_label = "保存修改" if editing_id else "加入片段列表"
-        st.button(
-            save_label,
-            type="primary",
-            use_container_width=True,
-            on_click=_submit_segment,
-        )
-        for e in st.session_state.get("add_errors") or []:
-            st.error(e)
-        if st.session_state.get("flash"):
-            st.success(st.session_state.flash)
-            st.session_state.flash = ""
-        if editing_id:
-            st.button("取消编辑", use_container_width=True, on_click=_cancel_edit)
-
-    st.divider()
-    st.subheader("片段列表（同一 session 可多段）")
-    segs = st.session_state.segments
-    if not segs:
-        st.info("尚无片段。在上方标注后点击「加入片段列表」。未导出的标注会自动保存，下次打开此 session 仍在。")
-    else:
-        for i, d in enumerate(list(segs)):
-            sid = d["segment_id"]
-            is_editing = st.session_state.editing_id == sid
-            c1, c2, c3, c4, c5 = st.columns([3, 1, 2, 1, 1])
-            with c1:
-                mark = " ← 编辑中" if is_editing else ""
-                done = " · 已导出" if d.get("exported") else " · 未导出"
-                st.write(
-                    f"**{d['action_zh']}**{mark}{done} · {_fmt_time(d['t0'])} → {_fmt_time(d['t1'])} "
-                    f"({d['t1'] - d['t0']:.2f}s)"
-                )
-            with c2:
-                st.write("好" if d["quality"] == "good" else "坏")
-            with c3:
-                st.caption(d.get("note") or d.get("output_dir") or "")
-            with c4:
-                st.button(
-                    "编辑",
-                    key=f"edit_{sid}_{i}",
-                    on_click=_start_edit,
-                    args=(sid,),
-                    disabled=is_editing or bool(d.get("exported")),
-                )
-            with c5:
-                st.button(
-                    "删除",
-                    key=f"del_{sid}_{i}",
-                    on_click=_delete_segment,
-                    args=(sid,),
-                    disabled=bool(d.get("exported")),
-                )
-
-        e1, e2 = st.columns(2)
-        with e1:
-            pending = [d for d in segs if not d.get("exported")]
-            export_label = (
-                f"导出未导出片段（{len(pending)}）" if pending else "没有未导出片段"
-            )
-            if st.button(
-                export_label,
-                type="primary",
-                use_container_width=True,
-                disabled=not pending,
-            ):
-                out_paths = []
-                progress = st.progress(0.0, text="导出中...")
-                try:
-                    done_n = 0
-                    for i, d in enumerate(segs):
-                        if d.get("exported"):
-                            continue
-                        seg = Segment.from_dict(d)
-                        out = export_segment(session, seg)
-                        st.session_state.segments[i]["exported"] = True
-                        st.session_state.segments[i]["output_dir"] = str(out)
-                        out_paths.append(out)
-                        done_n += 1
-                        progress.progress(
-                            done_n / max(len(pending), 1),
-                            text=f"已导出 {done_n}/{len(pending)}",
-                        )
-                    session.exported_count = count_exported(session.path)
-                    _persist_session(session)
-                    session.draft_count = count_draft_unexported(session.path)
-                    st.success(f"导出完成，共 {len(out_paths)} 段 → `{output_root}`")
-                    for p in out_paths:
-                        st.code(str(p))
-                except Exception as exc:
-                    st.exception(exc)
-        with e2:
-            if st.button("清空未导出草稿", use_container_width=True):
-                st.session_state.segments = [
-                    d for d in segs if d.get("exported")
-                ]
-                st.session_state.editing_id = None
-                _keep_player_at(st.session_state.get("player_seek_t") or 0.0)
-                _persist_session(session)
+        _annotation_ui(session, duration, output_root)
 
     st.divider()
     st.caption(

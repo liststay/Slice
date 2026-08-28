@@ -9,8 +9,9 @@ import threading
 import time
 
 PORT = 18765
-_HANDLER_VER = 2
+_HANDLER_VER = 4
 _STATE = Path("/tmp/video_cutter_media_root.txt")
+_PLAYER_PAGE = Path(__file__).resolve().parent / "player_component" / "index.html"
 _server: ThreadingHTTPServer | None = None
 
 
@@ -75,10 +76,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _cors(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length")
-        self.send_header("Connection", "close")
+        self.send_header("Connection", "keep-alive")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
-        self.close_connection = True
+        self.close_connection = False
         self.send_response(204)
         self._cors()
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
@@ -111,8 +112,26 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return fpath
 
+    def _serve_player_page(self, send_body: bool) -> None:
+        if not _PLAYER_PAGE.is_file():
+            self.send_error(404)
+            return
+        data = _PLAYER_PAGE.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self._cors()
+        self.end_headers()
+        if send_body:
+            self.wfile.write(data)
+
     def _serve(self, send_body: bool) -> None:
-        self.close_connection = True
+        self.close_connection = False
+        rel = unquote(urlparse(self.path).path).lstrip("/")
+        if rel == "player.html":
+            self._serve_player_page(send_body)
+            return
         fpath = self._resolve_file()
         if fpath is None:
             return
@@ -142,7 +161,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
         self._cors()
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
         if not send_body or length <= 0:
             return
