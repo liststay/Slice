@@ -77,8 +77,9 @@ pip install -r requirements.txt
 - 切分时长校验 `<= 10` 分钟
 - 中文动作名命名输出目录（`session_时间_动作_导出时间戳`，单下划线）
 - 未导出的标注自动写到 `divide/draft_segments.json`，下次打开同一 session 会恢复
-- 全程好数据、不需要切片时，点「整段合格，无需切分」：只写 `divide/session_review.json`，不复制视频；侧边栏可按「整段合格」筛选，并从「未处理」中移出
-- 侧边栏按「未处理 / 有草稿 / 已切分 / 整段合格」筛选，列表里能看出哪些已经处理过
+- 全程好数据或不达标、都不需要切片时，点「整段合格，无需切分」或「整段不合格」：只写 `divide/session_review.json`，不复制视频；侧边栏可按对应项筛选，并从「未处理」中移出
+- 侧边栏按「未处理 / 有草稿 / 已切分 / 整段合格 / 整段不合格」筛选，列表里能看出做到哪里
+- 编辑草稿片段时，播放器跳到该段起点
 - 界面顶部与右侧表单展示纳入标准：双手可见、动作语义完整，两项都达标才能标「好」
 - 同时切分：4 路视频、timestamps、IMU、audio，并拷贝 calibrations
 - 每段 `cut_info.json`，以及 `divide/logs/cut_history.jsonl`

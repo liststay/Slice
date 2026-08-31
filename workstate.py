@@ -36,6 +36,7 @@ def count_draft_unexported(session_dir: Path) -> int:
 
 REVIEW_FILENAME = "session_review.json"
 KEEP_WHOLE = "keep_whole"
+REJECT_WHOLE = "reject_whole"
 
 
 def review_path(session_dir: Path) -> Path:
@@ -55,14 +56,26 @@ def read_review(session_dir: Path) -> dict[str, Any] | None:
     return data
 
 
-def is_keep_whole(session_dir: Path) -> bool:
+def review_status(session_dir: Path) -> str:
     data = read_review(session_dir)
-    return bool(data) and data.get("status") == KEEP_WHOLE
+    if not data:
+        return ""
+    return str(data.get("status") or "")
 
 
-def save_keep_whole(
+def is_keep_whole(session_dir: Path) -> bool:
+    return review_status(session_dir) == KEEP_WHOLE
+
+
+def is_reject_whole(session_dir: Path) -> bool:
+    return review_status(session_dir) == REJECT_WHOLE
+
+
+def save_review(
     session_dir: Path,
     session_id: str,
+    status: str,
+    quality: str,
     note: str = "",
 ) -> Path:
     path = review_path(session_dir)
@@ -70,8 +83,8 @@ def save_keep_whole(
     payload = {
         "version": 1,
         "session_id": session_id,
-        "status": KEEP_WHOLE,
-        "quality": "good",
+        "status": status,
+        "quality": quality,
         "note": note,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -81,18 +94,42 @@ def save_keep_whole(
     return path
 
 
-def clear_keep_whole(session_dir: Path) -> None:
+def save_keep_whole(
+    session_dir: Path,
+    session_id: str,
+    note: str = "",
+) -> Path:
+    return save_review(session_dir, session_id, KEEP_WHOLE, "good", note)
+
+
+def save_reject_whole(
+    session_dir: Path,
+    session_id: str,
+    note: str = "",
+) -> Path:
+    return save_review(session_dir, session_id, REJECT_WHOLE, "bad", note)
+
+
+def clear_review(session_dir: Path) -> None:
     path = review_path(session_dir)
     if path.is_file():
         path.unlink()
 
 
+clear_keep_whole = clear_review
+
+
 def cut_status_label(
-    exported_n: int, draft_n: int, keep_whole: bool = False
+    exported_n: int,
+    draft_n: int,
+    keep_whole: bool = False,
+    reject_whole: bool = False,
 ) -> str:
     parts: list[str] = []
     if keep_whole:
         parts.append("整段合格")
+    if reject_whole:
+        parts.append("整段不合格")
     if exported_n:
         parts.append(f"已切分{exported_n}")
     if draft_n:

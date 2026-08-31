@@ -27,6 +27,7 @@ from workstate import (
     count_draft_unexported,
     count_exported,
     is_keep_whole,
+    is_reject_whole,
 )
 
 
@@ -42,6 +43,7 @@ class SessionInfo:
     exported_count: int = 0
     draft_count: int = 0
     keep_whole: bool = False
+    reject_whole: bool = False
 
     @property
     def videos_dir(self) -> Path:
@@ -142,6 +144,7 @@ def load_session(session_path: Path | str) -> SessionInfo:
         exported_count=count_exported(path),
         draft_count=count_draft_unexported(path),
         keep_whole=is_keep_whole(path),
+        reject_whole=is_reject_whole(path),
     )
 
 

@@ -48,6 +48,8 @@
   <script>
     const video = document.getElementById("v");
     const cur = document.getElementById("cur");
+    let lastSeekN = null;
+    let pinEndUntil = 0;
 
     function fmt(t) {
       if (!Number.isFinite(t) || t < 0) t = 0;
@@ -86,13 +88,18 @@
       if (video.dataset.src === url) return;
       video.dataset.src = url;
       video.dataset.retried = "";
+      lastSeekN = null;
       video.src = url;
     }
-    function applySeek(t) {
-      if (!Number.isFinite(t) || t < 0) return;
+    function applySeek(t, n) {
+      if (n == null || n === "" || n === lastSeekN) return;
+      lastSeekN = n;
+      pinEndUntil = 0;
+      const target = Number(t);
+      if (!Number.isFinite(target) || target < 0) return;
       const go = () => {
-        const dur = Number.isFinite(video.duration) ? video.duration : t;
-        video.currentTime = Math.min(Math.max(0, t), Math.max(0, dur));
+        const dur = Number.isFinite(video.duration) ? video.duration : target;
+        video.currentTime = Math.min(Math.max(0, target), Math.max(0, dur));
         tick();
       };
       if (video.readyState >= 1) go();
@@ -116,7 +123,6 @@
     video.loop = false;
     video.addEventListener("timeupdate", tick);
     video.addEventListener("seeked", tick);
-    let pinEndUntil = 0;
     video.addEventListener("ended", () => {
       pinEndUntil = Date.now() + 500;
       if (!Number.isFinite(video.duration) || video.duration <= 0) return;
@@ -140,7 +146,7 @@
         const src = video.dataset.src;
         window.setTimeout(() => {
           video.src = src;
-          applySeek(t);
+          applySeek(t, Date.now());
         }, 200);
         return;
       }
@@ -161,8 +167,20 @@
       if (!event.data || event.data.type !== "streamlit:render") return;
       const args = event.data.args || {};
       applySource(args.file, args.port, args.sid);
+      applySeek(args.seek_t, args.seek_n);
       setHeight();
     });
+    function onParentSeek(event) {
+      const d = event.data;
+      if (!d || d.type !== "cutter-seek") return;
+      applySeek(d.t, d.n);
+    }
+    try { window.parent.addEventListener("message", onParentSeek); } catch (e) {}
+    try {
+      if (window.parent.parent && window.parent.parent !== window.parent) {
+        window.parent.parent.addEventListener("message", onParentSeek);
+      }
+    } catch (e) {}
     send("streamlit:componentReady", { apiVersion: 1 });
     setHeight();
   </script>

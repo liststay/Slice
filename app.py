@@ -21,14 +21,16 @@ from models import MAX_SEGMENT_SEC, Segment
 from session_loader import discover_sessions
 from workstate import (
     clear_draft,
-    clear_keep_whole,
+    clear_review,
     count_draft_unexported,
     count_exported,
     cut_status_label,
     is_keep_whole,
+    is_reject_whole,
     load_work,
     save_draft,
     save_keep_whole,
+    save_reject_whole,
 )
 
 DEFAULT_DATA_ROOT = "/media/adminpc1/新加卷K/baai_ego_task"
@@ -85,6 +87,18 @@ def init_state() -> None:
         st.session_state.flash = ""
 
 
+def _queue_player_seek(t: float) -> None:
+    st.session_state.player_seek_t = float(t)
+    st.session_state.player_seek_n = int(st.session_state.get("player_seek_n") or 0) + 1
+
+
+def _seek_to_segment(segment_id: str) -> None:
+    for d in st.session_state.segments:
+        if d["segment_id"] == segment_id:
+            _queue_player_seek(float(d["t0"]))
+            break
+
+
 def _start_edit(segment_id: str) -> None:
     for d in st.session_state.segments:
         if d["segment_id"] != segment_id:
@@ -95,6 +109,7 @@ def _start_edit(segment_id: str) -> None:
         st.session_state.action_zh_input = str(d.get("action_zh") or "")
         st.session_state.quality_input = d.get("quality") or "good"
         st.session_state.note_input = str(d.get("note") or "")
+        _queue_player_seek(float(d["t0"]))
         break
 
 
@@ -167,9 +182,9 @@ def _submit_segment() -> None:
     path = Path(st.session_state.get("loaded_session_path") or "")
     if path:
         save_draft(path, path.name, list(st.session_state.segments), _form_state())
-        if is_keep_whole(path):
-            clear_keep_whole(path)
-            _set_keep_whole_flag(path, False)
+        if is_keep_whole(path) or is_reject_whole(path):
+            clear_review(path)
+            _set_review_flags(path, keep_whole=False, reject_whole=False)
 
 
 def _delete_segment(segment_id: str) -> None:
@@ -213,10 +228,13 @@ def _persist_session(session) -> None:
         clear_draft(session.path)
 
 
-def _set_keep_whole_flag(path: Path, value: bool) -> None:
+def _set_review_flags(
+    path: Path, *, keep_whole: bool, reject_whole: bool
+) -> None:
     for s in st.session_state.get("session_list") or []:
         if str(s.path) == str(path):
-            s.keep_whole = value
+            s.keep_whole = keep_whole
+            s.reject_whole = reject_whole
             break
 
 
@@ -227,29 +245,36 @@ def _mark_keep_whole() -> None:
         return
     note = str(st.session_state.get("note_input") or "").strip()
     save_keep_whole(path, path.name, note=note)
-    _set_keep_whole_flag(path, True)
+    _set_review_flags(path, keep_whole=True, reject_whole=False)
     st.session_state.add_errors = []
     st.session_state.flash = "已标记：整段合格，无需切分（不复制视频）"
 
 
-def _unmark_keep_whole() -> None:
+def _mark_reject_whole() -> None:
+    path = Path(st.session_state.get("loaded_session_path") or "")
+    if not path:
+        st.session_state.add_errors = ["未加载 session"]
+        return
+    note = str(st.session_state.get("note_input") or "").strip()
+    save_reject_whole(path, path.name, note=note)
+    _set_review_flags(path, keep_whole=False, reject_whole=True)
+    st.session_state.add_errors = []
+    st.session_state.flash = "已标记：整段不合格（不复制视频）"
+
+
+def _unmark_review() -> None:
     path = Path(st.session_state.get("loaded_session_path") or "")
     if not path:
         return
-    clear_keep_whole(path)
-    _set_keep_whole_flag(path, False)
-    st.session_state.flash = "已取消整段合格标记"
-
-
-def _rerun_app() -> None:
-    try:
-        st.rerun(scope="app")
-    except TypeError:
-        st.rerun()
+    clear_review(path)
+    _set_review_flags(path, keep_whole=False, reject_whole=False)
+    st.session_state.flash = "已取消整段标记"
 
 
 def _session_label(s) -> str:
-    extra = cut_status_label(s.exported_count, s.draft_count, s.keep_whole)
+    extra = cut_status_label(
+        s.exported_count, s.draft_count, s.keep_whole, s.reject_whole
+    )
     return (
         f"{s.session_id}  ({s.duration_sec:.1f}s, {s.frame_count}f)  {extra}"
     )
@@ -272,9 +297,18 @@ def _render_segment_row(i: int, d: dict) -> None:
     c1, c2, c3, c4, c5 = st.columns([4, 1, 3, 1, 1])
     with c1:
         mark = " ← 编辑中" if is_editing else ""
-        st.write(
-            f"**{d['action_zh']}**{mark} · {_fmt_time(d['t0'])} → {_fmt_time(d['t1'])} "
+        label = (
+            f"{d['action_zh']}{mark} · {_fmt_time(d['t0'])} → {_fmt_time(d['t1'])} "
             f"({d['t1'] - d['t0']:.2f}s)"
+        )
+        st.button(
+            label,
+            key=f"seek_{sid}_{i}",
+            on_click=_seek_to_segment,
+            args=(sid,),
+            use_container_width=True,
+            type="tertiary",
+            help="点击这一行，播放器跳到该段起点",
         )
     with c2:
         st.write("好" if d["quality"] == "good" else "坏")
@@ -300,7 +334,14 @@ def _render_segment_row(i: int, d: dict) -> None:
 
 def _annotation_ui(session, duration: float, output_root: Path) -> None:
     """Form + list; call this from the right-hand column so it sits beside the player."""
-    _apply_player_mark(_bridge(key="cutter_bridge"), duration)
+    _apply_player_mark(
+        _bridge(
+            key="cutter_bridge",
+            seek_t=float(st.session_state.get("player_seek_t") or 0.0),
+            seek_n=int(st.session_state.get("player_seek_n") or 0),
+        ),
+        duration,
+    )
     st.caption(
         f"已选区间：**{_fmt_time(float(st.session_state.t0_input))}** → "
         f"**{_fmt_time(float(st.session_state.t1_input))}**"
@@ -309,7 +350,7 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
     st.subheader("编辑切分片段" if editing_id else "添加切分片段")
     st.info(f"**切分标准**\n{CUT_RULES_MD}")
     if editing_id:
-        st.caption("正在修改列表中的一段，保存后会覆盖原条目。")
+        st.caption("正在修改列表中的一段，保存后会覆盖原条目。播放器已跳到该段起点。")
     t0 = st.number_input(
         "起点 t0 (秒)",
         min_value=0.0,
@@ -361,25 +402,43 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
 
     if session.keep_whole:
         st.success("已标记为整段合格，无需切分。")
-        if st.button("取消整段合格标记", use_container_width=True):
-            _unmark_keep_whole()
-            _rerun_app()
-    else:
-        if st.button(
-            "整段合格，无需切分",
+        st.button(
+            "取消整段合格标记",
             use_container_width=True,
-            help="全程都是好数据、不需要切片。只在 divide/session_review.json 留下标记，不复制视频。",
-        ):
-            _mark_keep_whole()
-            _rerun_app()
+            on_click=_unmark_review,
+        )
+    elif session.reject_whole:
+        st.warning("已标记为整段不合格。")
+        st.button(
+            "取消整段不合格标记",
+            use_container_width=True,
+            on_click=_unmark_review,
+        )
+    else:
+        k1, k2 = st.columns(2)
+        with k1:
+            st.button(
+                "整段合格，无需切分",
+                use_container_width=True,
+                on_click=_mark_keep_whole,
+                help="全程都是好数据、不需要切片。只在 divide/session_review.json 留下标记，不复制视频。",
+            )
+        with k2:
+            st.button(
+                "整段不合格",
+                use_container_width=True,
+                on_click=_mark_reject_whole,
+                help="全程都是坏数据、不需要切片。只留下标记，不复制视频；侧边栏会从「未处理」移出。",
+            )
 
     segs = st.session_state.segments
     pending = [d for d in segs if not d.get("exported")]
     exported = [d for d in segs if d.get("exported")]
     st.subheader("片段列表")
+    st.caption("点片段名称可跳到该段起点；点「编辑」才会改这条草稿。")
     if not segs:
         st.info(
-            "尚无片段。全程合格、不需要切时点「整段合格，无需切分」；"
+            "尚无片段。全程合格或不合格、不需要切时点对应标记；"
             "否则在播放器上标区间后点「加入片段列表」。"
             "未导出的标注会自动保存，下次打开此 session 仍在。"
         )
@@ -470,12 +529,13 @@ def main() -> None:
         st.caption(
             "已切分 "
             f"{sum(1 for s in sessions if s.exported_count)} 个 · 整段合格 "
-            f"{sum(1 for s in sessions if s.keep_whole)} 个 · 有草稿 "
+            f"{sum(1 for s in sessions if s.keep_whole)} 个 · 整段不合格 "
+            f"{sum(1 for s in sessions if s.reject_whole)} 个 · 有草稿 "
             f"{sum(1 for s in sessions if s.draft_count)} 个 · 共 {len(sessions)} 个"
         )
         status = st.radio(
             "切分进度",
-            ["全部", "未处理", "有草稿", "已切分", "整段合格"],
+            ["全部", "未处理", "有草稿", "已切分", "整段合格", "整段不合格"],
             horizontal=True,
             key="status_filter",
         )
@@ -502,6 +562,7 @@ def main() -> None:
                 if s.exported_count == 0
                 and s.draft_count == 0
                 and not s.keep_whole
+                and not s.reject_whole
             ]
         elif status == "有草稿":
             filtered = [s for s in filtered if s.draft_count > 0]
@@ -509,6 +570,8 @@ def main() -> None:
             filtered = [s for s in filtered if s.exported_count > 0]
         elif status == "整段合格":
             filtered = [s for s in filtered if s.keep_whole]
+        elif status == "整段不合格":
+            filtered = [s for s in filtered if s.reject_whole]
 
         if not filtered:
             st.warning("没有匹配的 session_*，请改筛选条件。")
@@ -545,7 +608,7 @@ def main() -> None:
             st.session_state.action_zh_input = str(form.get("action_zh") or "")
             st.session_state.quality_input = form.get("quality") or "good"
             st.session_state.note_input = str(form.get("note") or "")
-            st.session_state.editing_id = form.get("editing_id")
+            st.session_state.editing_id = None
             st.session_state.last_player_n = None
             st.session_state.player_seek_t = 0.0
             st.session_state.player_seek_n = int(
@@ -567,7 +630,7 @@ def main() -> None:
             1 for d in st.session_state.segments if not d.get("exported")
         )
         st.markdown(
-            f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole)}"
+            f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole, session.reject_whole)}"
         )
         play_cam = st.selectbox(
             "播放相机（导出仍切 4 路）",
@@ -589,6 +652,12 @@ def main() -> None:
             "全程好数据，不导出切片；侧边栏可按「整段合格」筛选。"
             "若之后仍要切段，加入片段列表会自动取消该标记。"
         )
+    elif session.reject_whole:
+        st.info(
+            "此 session 已标记为**整段不合格**。"
+            "全程坏数据，不导出切片；侧边栏可按「整段不合格」筛选。"
+            "若之后仍要切段，加入片段列表会自动取消该标记。"
+        )
     elif live_exported or live_draft or session.exported_count:
         st.info(
             f"此 session 已导出 **{max(live_exported, session.exported_count)}** 段，"
@@ -604,6 +673,8 @@ def main() -> None:
                 file=f"{play_cam}.mp4",
                 sid=session.session_id,
                 port=PORT,
+                seek_t=float(st.session_state.get("player_seek_t") or 0.0),
+                seek_n=int(st.session_state.get("player_seek_n") or 0),
                 key="cutter_player",
             )
         else:
@@ -615,7 +686,7 @@ def main() -> None:
     st.caption(
         f"切分日志：`{output_root / 'logs' / 'cut_history.jsonl'}` · "
         f"未导出草稿：`{output_root / 'draft_segments.json'}` · "
-        f"整段合格标记：`{output_root / 'session_review.json'}` · "
+        f"整段标记：`{output_root / 'session_review.json'}` · "
         "原 videos / timestamps / imu / audio / calibrations 不会被修改"
     )
     _persist_session(session)

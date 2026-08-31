@@ -3,6 +3,7 @@
 <head><meta charset="utf-8" /></head>
 <body>
 <script>
+  let lastSeekN = null;
   function send(type, data) {
     window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
   }
@@ -10,15 +11,25 @@
   function toPython(value) {
     send("streamlit:setComponentValue", { value: value, dataType: "json" });
   }
-  function onMsg(event) {
+  function onMark(event) {
     const d = event.data;
     if (!d || d.type !== "cutter-mark") return;
     toPython({ kind: d.kind, t: d.t, n: d.n });
   }
-  try { window.parent.addEventListener("message", onMsg); } catch (e) {}
+  function onRender(event) {
+    const d = event.data;
+    if (!d || d.type !== "streamlit:render") return;
+    const args = d.args || {};
+    const n = args.seek_n;
+    if (n == null || n === "" || n === lastSeekN) return;
+    lastSeekN = n;
+    window.parent.postMessage({ type: "cutter-seek", t: args.seek_t, n: n }, "*");
+  }
+  window.addEventListener("message", onRender);
+  try { window.parent.addEventListener("message", onMark); } catch (e) {}
   try {
     if (window.parent.parent && window.parent.parent !== window.parent) {
-      window.parent.parent.addEventListener("message", onMsg);
+      window.parent.parent.addEventListener("message", onMark);
     }
   } catch (e) {}
   ready();
