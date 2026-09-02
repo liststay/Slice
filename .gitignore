@@ -5,3 +5,4 @@ recover_remaining.log
 recover_remaining.pid
 recover_batch.log
 recover_batch_K.log
+sync_good_to_nas.log
