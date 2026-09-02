@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Overnight / later recovery of remaining truncated sessions.
 # Original videos are not modified. Output: session_*/videos_recovered/
+# Sidecars (timestamps/imu/audio/meta.json) are trimmed; originals go to recovery_backup/
 set -euo pipefail
 cd "$(dirname "$0")"
 

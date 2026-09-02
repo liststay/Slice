@@ -12,6 +12,7 @@ Quality = Literal["good", "bad"]
 
 MAX_SEGMENT_SEC = 600.0  # <= 10 minutes
 CAMERAS = ("left", "right", "bright", "bleft")
+EXPORT_CAMERAS = ("left", "right")
 
 
 def sanitize_name(name: str) -> str:

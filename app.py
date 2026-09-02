@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 
 # Allow running as `streamlit run app.py` from this directory
@@ -15,7 +16,7 @@ _install_quiet_logs()
 import streamlit as st
 import streamlit.components.v1 as components
 
-from cutter import divide_output_root, export_segment
+from cutter import append_cut_log, divide_output_root, export_segment
 from media_server import PORT, ensure_server
 from models import MAX_SEGMENT_SEC, Segment
 from session_loader import discover_sessions
@@ -187,14 +188,57 @@ def _submit_segment() -> None:
             _set_review_flags(path, keep_whole=False, reject_whole=False)
 
 
+def _remove_export_folder(session_dir: Path, output_dir: str) -> bool:
+    """Delete an exported cut folder only if it lives under session/divide/good|bad."""
+    if not output_dir:
+        return False
+    out = Path(output_dir).resolve()
+    divide = (session_dir / "divide").resolve()
+    try:
+        out.relative_to(divide)
+    except ValueError:
+        return False
+    if out.parent.name not in ("good", "bad") or not out.is_dir():
+        return False
+    shutil.rmtree(out)
+    return True
+
+
 def _delete_segment(segment_id: str) -> None:
-    segs = st.session_state.segments
+    segs = list(st.session_state.segments)
+    target = next((d for d in segs if d["segment_id"] == segment_id), None)
     st.session_state.segments = [d for d in segs if d["segment_id"] != segment_id]
     if st.session_state.editing_id == segment_id:
         st.session_state.editing_id = None
     path = Path(st.session_state.get("loaded_session_path") or "")
+    removed = False
+    if path and target and target.get("exported"):
+        removed = _remove_export_folder(path, str(target.get("output_dir") or ""))
+        if removed:
+            append_cut_log(
+                path / "divide" / "logs" / "cut_history.jsonl",
+                {
+                    "action": "delete_export",
+                    "segment_id": segment_id,
+                    "action_zh": target.get("action_zh"),
+                    "output_dir": target.get("output_dir"),
+                    "source_session": str(path),
+                },
+            )
+        for s in st.session_state.get("session_list") or []:
+            if str(s.path) == str(path):
+                s.exported_count = count_exported(path)
+                break
+        st.session_state.flash = (
+            "已删除导出切片文件夹" if removed else "已从列表移除（未找到对应切片文件夹）"
+        )
     if path:
-        save_draft(path, path.name, list(st.session_state.segments), _form_state())
+        remaining = list(st.session_state.segments)
+        form = _form_state()
+        if remaining or _form_dirty(form, float(st.session_state.get("_duration") or 0.0)):
+            save_draft(path, path.name, remaining, form)
+        else:
+            clear_draft(path)
 
 
 def _form_state() -> dict:
@@ -328,7 +372,7 @@ def _render_segment_row(i: int, d: dict) -> None:
             key=f"del_{sid}_{i}",
             on_click=_delete_segment,
             args=(sid,),
-            disabled=exported,
+            help="从未导出列表去掉；若已导出，同时删除 divide 下的切片文件夹（原 session 视频不动）。",
         )
 
 
@@ -435,7 +479,7 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
     pending = [d for d in segs if not d.get("exported")]
     exported = [d for d in segs if d.get("exported")]
     st.subheader("片段列表")
-    st.caption("点片段名称可跳到该段起点；点「编辑」才会改这条草稿。")
+    st.caption("点片段名称可跳到该段起点；点「编辑」改草稿；已导出也可点「删除」去掉切片文件夹。")
     if not segs:
         st.info(
             "尚无片段。全程合格或不合格、不需要切时点对应标记；"
@@ -446,10 +490,6 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
 
     if pending:
         st.markdown(f"**未导出草稿（{len(pending)}）**")
-        for i, d in enumerate(list(segs)):
-            if d.get("exported"):
-                continue
-            _render_segment_row(i, d)
         e1, e2 = st.columns(2)
         with e1:
             export_label = f"导出未导出片段（{len(pending)}）"
@@ -488,6 +528,10 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
                 st.session_state.segments = [d for d in segs if d.get("exported")]
                 st.session_state.editing_id = None
                 _persist_session(session)
+        for i, d in enumerate(list(segs)):
+            if d.get("exported"):
+                continue
+            _render_segment_row(i, d)
 
     if exported:
         st.markdown(f"**已导出（{len(exported)}）**")
@@ -507,7 +551,7 @@ def main() -> None:
 
     st.title("Ego 视频切分工具")
     st.caption(
-        "以 left.mp4 为主视角标注；导出 4 路视频 + timestamps + IMU + audio + "
+        "以 left.mp4 为主视角标注；按帧导出 left / right 视频 + timestamps + IMU + "
         "calibrations；切片写入当前 session 下的 divide/。"
     )
     st.warning(f"**{CUT_RULES_TITLE}**\n{CUT_RULES_MD}")
@@ -633,7 +677,7 @@ def main() -> None:
             f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole, session.reject_whole)}"
         )
         play_cam = st.selectbox(
-            "播放相机（导出仍切 4 路）",
+            "播放相机（导出只切 left / right）",
             session.cameras_present or ["left"],
             index=(session.cameras_present or ["left"]).index("left")
             if "left" in (session.cameras_present or ["left"])
@@ -689,7 +733,6 @@ def main() -> None:
         f"整段标记：`{output_root / 'session_review.json'}` · "
         "原 videos / timestamps / imu / audio / calibrations 不会被修改"
     )
-    _persist_session(session)
 
 
 if __name__ == "__main__":

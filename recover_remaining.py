@@ -2,6 +2,7 @@
 """Recover remaining truncated session videos. Safe to re-run (skips done cameras).
 
 Does not modify original videos. Writes session_*/videos_recovered/*.mp4
+and trims timestamps / IMU / audio to match, with originals in recovery_backup/.
 
 Usage:
   python3 recover_remaining.py --list

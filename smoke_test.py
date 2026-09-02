@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from cutter import divide_output_root, export_segment
+from cutter import divide_output_root, export_segment, probe_nb_frames
 from models import Segment
 from session_loader import load_session
 
@@ -47,11 +47,33 @@ def main() -> None:
     assert out.name.startswith(session.session_id + "_")
 
     try:
-        for cam in ("left", "right", "bright", "bleft"):
+        info = json.loads((out / "cut_info.json").read_text(encoding="utf-8"))
+        counts = info.get("expected_frame_counts") or {}
+        video_counts = {}
+        ends = {}
+        for cam in ("left", "right"):
             assert (out / "videos" / f"{cam}.mp4").is_file(), f"missing video {cam}"
             assert (out / "timestamps" / f"{cam}_timestamps.txt").is_file(), f"missing ts {cam}"
+            expected = int(counts.get(cam, info["expected_frames"]))
+            n = probe_nb_frames(out / "videos" / f"{cam}.mp4")
+            video_counts[cam] = n
+            assert n == expected, f"{cam} frames {n} != expected {expected}"
+            ts_lines = (
+                (out / "timestamps" / f"{cam}_timestamps.txt")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            )
+            assert len(ts_lines) == expected, f"{cam} ts {len(ts_lines)} != {expected}"
+            first_ts = float(ts_lines[0].split()[1])
+            last_ts = float(ts_lines[-1].split()[1])
+            assert first_ts > 1e6, f"{cam} timestamp should be absolute, got {first_ts}"
+            ends[cam] = (first_ts, last_ts, len(ts_lines))
+        assert not (out / "videos" / "bright.mp4").exists()
+        assert not (out / "videos" / "bleft.mp4").exists()
+        assert abs(ends["left"][0] - ends["right"][0]) < 1e-6, ends
+        assert abs(ends["left"][1] - ends["right"][1]) < 1e-6, ends
         assert (out / "imu" / "imu0.csv").is_file()
-        assert (out / "audio" / "audio.wav").is_file()
+        assert not (out / "audio").exists()
         assert (out / "calibrations").is_dir()
         assert (out / "meta.json").is_file()
         assert (out / "cut_info.json").is_file()

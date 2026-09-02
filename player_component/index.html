@@ -33,7 +33,7 @@
 </head>
 <body>
   <div class="stage">
-    <video id="v" controls preload="metadata"></video>
+    <video id="v" controls preload="auto"></video>
   </div>
   <div class="bar">
     <button id="back15" type="button">−15s</button>
@@ -48,8 +48,11 @@
   <script>
     const video = document.getElementById("v");
     const cur = document.getElementById("cur");
+    const SEEK_KEY = "cutter_player_seek_n";
     let lastSeekN = null;
+    try { lastSeekN = sessionStorage.getItem(SEEK_KEY); } catch (e) {}
     let pinEndUntil = 0;
+    let lastHeight = 0;
 
     function fmt(t) {
       if (!Number.isFinite(t) || t < 0) t = 0;
@@ -77,7 +80,10 @@
       const bar = document.querySelector(".bar");
       const hint = document.querySelector(".hint");
       const extra = (bar ? bar.offsetHeight : 48) + (hint ? hint.offsetHeight : 24) + 16;
-      send("streamlit:setFrameHeight", { height: videoH + extra });
+      const total = videoH + extra;
+      if (total === lastHeight) return;
+      lastHeight = total;
+      send("streamlit:setFrameHeight", { height: total });
     }
     function applySource(file, port, sid) {
       if (!file || !port) return;
@@ -88,12 +94,13 @@
       if (video.dataset.src === url) return;
       video.dataset.src = url;
       video.dataset.retried = "";
-      lastSeekN = null;
       video.src = url;
     }
     function applySeek(t, n) {
-      if (n == null || n === "" || n === lastSeekN) return;
+      if (n == null || n === "") return;
+      if (String(n) === String(lastSeekN)) return;
       lastSeekN = n;
+      try { sessionStorage.setItem(SEEK_KEY, String(n)); } catch (e) {}
       pinEndUntil = 0;
       const target = Number(t);
       if (!Number.isFinite(target) || target < 0) return;

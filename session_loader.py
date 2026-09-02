@@ -192,17 +192,43 @@ def load_timestamps(path: Path) -> list[tuple[int, float]]:
     return rows
 
 
+def abs_time_to_frame_index(
+    timestamps: list[tuple[int, float]], abs_ts: float
+) -> int:
+    """Map an absolute timestamp to the nearest frame index."""
+    if not timestamps:
+        return 0
+    i = bisect.bisect_left(timestamps, abs_ts, key=lambda row: row[1])
+    candidates = []
+    if i < len(timestamps):
+        candidates.append(i)
+    if i > 0:
+        candidates.append(i - 1)
+    return min(candidates, key=lambda idx: abs(timestamps[idx][1] - abs_ts))
+
+
+def first_index_ge(
+    timestamps: list[tuple[int, float]], abs_ts: float
+) -> int:
+    """First index with timestamp >= abs_ts, or len(timestamps) if none."""
+    if not timestamps:
+        return 0
+    return bisect.bisect_left(timestamps, abs_ts, key=lambda row: row[1])
+
+
+def last_index_le(
+    timestamps: list[tuple[int, float]], abs_ts: float
+) -> int:
+    """Last index with timestamp <= abs_ts, or -1 if none."""
+    if not timestamps:
+        return -1
+    return bisect.bisect_right(timestamps, abs_ts, key=lambda row: row[1]) - 1
+
+
 def relative_time_to_frame_index(
     timestamps: list[tuple[int, float]], t_rel: float, fps: float
 ) -> int:
     """Map relative video time (seconds from start) to nearest frame index."""
     if not timestamps:
         return max(0, int(round(t_rel * fps)))
-    target = timestamps[0][1] + t_rel
-    i = bisect.bisect_left(timestamps, target, key=lambda row: row[1])
-    candidates = []
-    if i < len(timestamps):
-        candidates.append(i)
-    if i > 0:
-        candidates.append(i - 1)
-    return min(candidates, key=lambda idx: abs(timestamps[idx][1] - target))
+    return abs_time_to_frame_index(timestamps, timestamps[0][1] + t_rel)

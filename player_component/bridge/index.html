@@ -21,7 +21,7 @@
     if (!d || d.type !== "streamlit:render") return;
     const args = d.args || {};
     const n = args.seek_n;
-    if (n == null || n === "" || n === lastSeekN) return;
+    if (n == null || n === "" || String(n) === String(lastSeekN)) return;
     lastSeekN = n;
     window.parent.postMessage({ type: "cutter-seek", t: args.seek_t, n: n }, "*");
   }
