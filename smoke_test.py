@@ -73,6 +73,24 @@ def main() -> None:
         assert abs(ends["left"][0] - ends["right"][0]) < 1e-6, ends
         assert abs(ends["left"][1] - ends["right"][1]) < 1e-6, ends
         assert (out / "imu" / "imu0.csv").is_file()
+        imu_lines = [
+            ln
+            for ln in (out / "imu" / "imu0.csv").read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.startswith("timestamp")
+        ]
+        abs_win = info.get("abs_time_window")
+        assert abs_win and len(imu_lines) > 0
+        imu_first = float(imu_lines[0].split(",", 1)[0])
+        imu_last = float(imu_lines[-1].split(",", 1)[0])
+        assert imu_first >= float(abs_win[0]) - 1e-3, (imu_first, abs_win)
+        assert imu_last < float(abs_win[1]) + 1e-3, (imu_last, abs_win)
+        src_imu = SESSION / "imu" / "imu0.csv"
+        if src_imu.is_file() and session.duration_sec > t1 + 0.5:
+            assert (out / "imu" / "imu0.csv").stat().st_size < src_imu.stat().st_size
+        src_meta = SESSION / "meta.json"
+        if src_meta.is_file():
+            assert (out / "meta.json").read_bytes() == src_meta.read_bytes()
+        assert info.get("imu_samples") == len(imu_lines)
         assert not (out / "audio").exists()
         assert (out / "calibrations").is_dir()
         assert (out / "meta.json").is_file()

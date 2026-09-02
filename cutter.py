@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import csv
 import json
 import os
 import shutil
@@ -393,6 +394,60 @@ def cut_timestamps_by_frame_range(
     return len(chosen)
 
 
+def cut_imu_csv(src: Path, dst: Path, ts_start: float, ts_end: float) -> int:
+    """Keep IMU rows whose timestamp is in [ts_start, ts_end)."""
+    if not src.is_file():
+        return 0
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    same = src.resolve() == dst.resolve()
+    out_path = dst.with_name(dst.name + ".tmp") if same else dst
+    n = 0
+    with src.open("r", encoding="utf-8", newline="") as fin, out_path.open(
+        "w", encoding="utf-8", newline=""
+    ) as fout:
+        reader = csv.reader(fin)
+        writer = csv.writer(fout)
+        header = next(reader, None)
+        if header:
+            writer.writerow(header)
+        for row in reader:
+            if not row:
+                continue
+            try:
+                ts = float(row[0])
+            except ValueError:
+                continue
+            if ts < ts_start:
+                continue
+            if ts >= ts_end:
+                break
+            writer.writerow(row)
+            n += 1
+    if same:
+        out_path.replace(dst)
+    return n
+
+
+def cut_imu_dir(src_dir: Path, dst_dir: Path, ts_start: float, ts_end: float) -> int:
+    """Trim csv files in imu/ to the cut window; copy any other files as-is."""
+    if not src_dir.is_dir():
+        return 0
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    n_main = 0
+    for src_file in sorted(src_dir.iterdir()):
+        if not src_file.is_file() or src_file.name.endswith(".tmp"):
+            continue
+        dst_file = dst_dir / src_file.name
+        if src_file.suffix.lower() == ".csv":
+            n = cut_imu_csv(src_file, dst_file, ts_start, ts_end)
+            if src_file.name == "imu0.csv" or n_main == 0:
+                n_main = n
+        else:
+            if src_file.resolve() != dst_file.resolve():
+                shutil.copy2(src_file, dst_file)
+    return n_main
+
+
 def append_cut_log(log_path: Path, record: dict[str, Any]) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
@@ -412,7 +467,8 @@ def export_segment(
     """
     Export one segment bundle under session_*/divide/good|bad/...
     Cuts left/right videos by frame index; writes absolute timestamps.
-    Copies imu/ as-is (not trimmed). Does not cut audio.
+    Trims imu/ to the aligned absolute time window. Copies original meta.json
+    unchanged. Does not cut audio.
     Does not modify original session files.
     """
     errors = segment.validate()
@@ -520,7 +576,9 @@ def export_segment(
         imu_fut = None
         imu_dir = session.imu_csv.parent
         if imu_dir.is_dir():
-            imu_fut = pool.submit(shutil.copytree, imu_dir, out_dir / "imu")
+            imu_fut = pool.submit(
+                cut_imu_dir, imu_dir, out_dir / "imu", ts_start, ts_end
+            )
         for fut in futs:
             fut.result()
         for fut in ts_futs:
@@ -529,50 +587,15 @@ def export_segment(
                 ts_counts[cam] = n
         if calib_fut is not None:
             calib_fut.result()
-        if imu_fut is not None:
-            imu_fut.result()
+        imu_n = imu_fut.result() if imu_fut is not None else 0
 
-    # Meta for sliced bundle: copy session meta, then overwrite times for this cut.
-    span_sec = max(0.0, float(common_last) - float(common_first))
     duration_sec = max(0.0, float(ts_end) - float(ts_start))
     if duration_sec <= 0:
         duration_sec = segment.duration()
-    n_left = int(ts_counts.get("left", n_frames))
-    sliced_meta = {
-        **session.meta,
-        "source_session": str(session.path),
-        "source_session_id": session.session_id,
-        "cut": {
-            "action_zh": segment.action_zh,
-            "quality": segment.quality,
-            "t0": segment.t0,
-            "t1": segment.t1,
-            "duration_sec": duration_sec,
-            "frame_range_left": [i0, i1],
-            "frame_ranges": {cam: list(ranges[cam]) for cam in ranges},
-            "expected_frames": n_frames,
-            "expected_frame_counts": {
-                cam: max(1, end - start) for cam, (start, end) in ranges.items()
-            },
-            "abs_time_window": [ts_start, ts_end],
-            "abs_first_last": [common_first, common_last],
-            "note": segment.note,
-            "segment_id": segment.segment_id,
-        },
-        "duration_sec": duration_sec,
-        "synced_frames": n_left,
-        "span_sec": round(span_sec, 6),
-        "total_written_frames": n_left,
-    }
-    if session.fps > 0 and span_sec > 0:
-        sliced_meta["avg_fps_per_cam"] = round(n_left / span_sec, 4)
-    topics = sliced_meta.get("topics")
-    if isinstance(topics, dict):
-        for cam, n in ts_counts.items():
-            if cam in topics and isinstance(topics[cam], dict):
-                topics[cam]["written_frames"] = int(n)
-    with (out_dir / "meta.json").open("w", encoding="utf-8") as f:
-        json.dump(sliced_meta, f, ensure_ascii=False, indent=2)
+
+    src_meta = session.path / "meta.json"
+    if src_meta.is_file():
+        shutil.copy2(src_meta, out_dir / "meta.json")
 
     cut_info = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -593,6 +616,7 @@ def export_segment(
         "abs_time_window": [ts_start, ts_end],
         "abs_first_last": [common_first, common_last],
         "timestamp_counts": ts_counts,
+        "imu_samples": imu_n,
         "cameras": [c for c in EXPORT_CAMERAS if (videos_out / f"{c}.mp4").is_file()],
         "operator_note": segment.note,
         "segment_id": segment.segment_id,

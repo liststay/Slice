@@ -1,7 +1,7 @@
-"""Align timestamps of already-exported cut bundles and correct meta.json times.
+"""Align timestamps of already-exported cut bundles.
 
 Use this on divide/ outputs (local or NAS). Does not touch original sessions.
-Rewrites timestamps/ and meta.json in place (no file backup).
+Rewrites timestamps/ and imu/ in place (no file backup). Does not modify meta.json.
 
 Usage:
   python align_cut_exports.py --root /mnt/nas/synnas/ego/baai_ego_task
@@ -11,7 +11,6 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 import json
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cutter import common_abs_frame_window
+from cutter import common_abs_frame_window, cut_imu_dir
 from models import CAMERAS
 from recover_truncated_mp4 import (
     load_timestamp_rows,
@@ -73,27 +72,36 @@ def already_aligned(cam_ts: dict[str, list[tuple[int, float]]]) -> bool:
     )
 
 
-def meta_needs_time_fix(
-    meta: dict, times: list[float], n_frames: int, fps: float
-) -> bool:
-    if not times:
+def _imu_first_last(path: Path) -> tuple[float, float] | None:
+    if not path.is_file():
+        return None
+    first = last = None
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        next(f, None)
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ts = float(line.split(",", 1)[0])
+            except ValueError:
+                continue
+            if first is None:
+                first = ts
+            last = ts
+    if first is None:
+        return None
+    return first, last
+
+
+def imu_needs_trim(cut_dir: Path, ts_start: float, ts_end: float) -> bool:
+    ends = _imu_first_last(cut_dir / "imu" / "imu0.csv")
+    if ends is None:
         return False
-    span = times[-1] - times[0]
-    meta_span = meta.get("span_sec")
-    if meta_span is None or abs(float(meta_span) - span) > 0.5:
-        return True
-    synced = meta.get("synced_frames")
-    if synced is None or int(synced) != int(n_frames):
-        return True
-    dur = meta.get("duration_sec")
-    expect = span + (1.0 / max(fps, 1.0))
-    if dur is None or abs(float(dur) - expect) > 1.5:
-        if dur is None or abs(float(dur) - span) > 1.5:
-            return True
-    return False
+    return ends[0] < ts_start - 0.05 or ends[1] > ts_end + 0.05
 
 
-def patch_cut_meta(
+def patch_cut_info(
     cut_dir: Path,
     *,
     fps: float,
@@ -101,64 +109,27 @@ def patch_cut_meta(
     times: list[float],
     ranges: dict[str, tuple[int, int]],
     duration_sec: float,
+    imu_samples: int | None = None,
 ) -> None:
-    meta_path = cut_dir / "meta.json"
-    if not meta_path.is_file():
+    info_path = cut_dir / "cut_info.json"
+    if not info_path.is_file():
         return
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    original = {
-        "duration_sec": meta.get("duration_sec"),
-        "synced_frames": meta.get("synced_frames"),
-        "span_sec": meta.get("span_sec"),
-        "total_written_frames": meta.get("total_written_frames"),
-        "avg_fps_per_cam": meta.get("avg_fps_per_cam"),
-    }
     n_ref = counts.get("left") or next(iter(counts.values()), 0)
-    span = max(0.0, times[-1] - times[0]) if times else 0.0
     ts_first = times[0] if times else 0.0
     ts_last = times[-1] if times else 0.0
-    meta["duration_sec"] = round(float(duration_sec), 6)
-    meta["synced_frames"] = int(n_ref)
-    meta["span_sec"] = round(float(span), 6)
-    if meta.get("total_written_frames") is not None:
-        meta["total_written_frames"] = int(n_ref)
-    if fps > 0 and span > 0:
-        meta["avg_fps_per_cam"] = round(n_ref / span, 4)
-    topics = meta.get("topics")
-    if isinstance(topics, dict):
-        for cam, n in counts.items():
-            if cam in topics and isinstance(topics[cam], dict):
-                topics[cam]["written_frames"] = int(n)
-    cut = meta.get("cut")
-    if isinstance(cut, dict):
-        cut["duration_sec"] = round(float(duration_sec), 6)
-        cut["abs_time_window"] = [ts_first, ts_last + (1.0 / max(fps, 1.0))]
-        if "left" in ranges:
-            cut["frame_range_left"] = list(ranges["left"])
-        cut["expected_frames"] = int(n_ref)
-        cut["frame_ranges"] = {cam: list(r) for cam, r in ranges.items()}
-    meta["cut_alignment"] = {
-        "aligned_at": datetime.now(timezone.utc).isoformat(),
-        "frame_ranges": {cam: list(r) for cam, r in ranges.items()},
-        "original": original,
-    }
-    meta_path.write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["duration"] = round(float(duration_sec), 6)
+    info["abs_time_window"] = [ts_first, ts_last + (1.0 / max(fps, 1.0))]
+    info["expected_frames"] = int(n_ref)
+    info["timestamp_counts"] = {cam: int(n) for cam, n in counts.items()}
+    if "left" in ranges:
+        info["frame_range"] = list(ranges["left"])
+    info["frame_ranges"] = {cam: list(r) for cam, r in ranges.items()}
+    if imu_samples is not None:
+        info["imu_samples"] = int(imu_samples)
+    info_path.write_text(
+        json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-
-    info_path = cut_dir / "cut_info.json"
-    if info_path.is_file():
-        info = json.loads(info_path.read_text(encoding="utf-8"))
-        info["duration"] = round(float(duration_sec), 6)
-        info["abs_time_window"] = [ts_first, ts_last + (1.0 / max(fps, 1.0))]
-        info["expected_frames"] = int(n_ref)
-        info["timestamp_counts"] = {cam: int(n) for cam, n in counts.items()}
-        if "left" in ranges:
-            info["frame_range"] = list(ranges["left"])
-        info["frame_ranges"] = {cam: list(r) for cam, r in ranges.items()}
-        info_path.write_text(
-            json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
 
 
 def align_one(cut_dir: Path, *, dry_run: bool, force: bool) -> str:
@@ -197,20 +168,19 @@ def align_one(cut_dir: Path, *, dry_run: bool, force: bool) -> str:
     assert ref is not None
     lo, hi = ranges.get(ref, (0, len(cam_ts[ref])))
     aligned_times = [ts for _, ts in cam_ts[ref][lo:hi]]
-    n_ref = max(1, hi - lo)
-    need_meta = meta_needs_time_fix(meta, aligned_times, n_ref, fps)
-    if meta.get("cut_alignment", {}).get("aligned_at") and not force:
-        if not need_align and not need_meta:
-            return "skip (already aligned)"
-
-    if not need_align and not need_meta and not force:
-        return "skip (timestamps aligned, meta times ok)"
+    ts_start = aligned_times[0] if aligned_times else 0.0
+    ts_end = (
+        aligned_times[-1] + (1.0 / max(fps, 1.0)) if aligned_times else 0.0
+    )
+    need_imu = bool(aligned_times) and imu_needs_trim(cut_dir, ts_start, ts_end)
+    if not need_align and not need_imu and not force:
+        return "skip (timestamps aligned)"
 
     actions = []
     if need_align:
         actions.append("timestamps+video")
-    if need_meta:
-        actions.append("meta")
+    if need_imu:
+        actions.append("imu")
     if dry_run:
         extra = []
         for cam, (a, b) in ranges.items():
@@ -239,25 +209,29 @@ def align_one(cut_dir: Path, *, dry_run: bool, force: bool) -> str:
     span = (times[-1] - times[0]) if times else 0.0
     if duration_sec is None or duration_sec <= 0:
         duration_sec = span + (1.0 / max(fps, 1.0)) if times else 0.0
-    patch_cut_meta(
+    imu_n = None
+    if (need_imu or force) and (cut_dir / "imu").is_dir() and times:
+        imu_n = cut_imu_dir(cut_dir / "imu", cut_dir / "imu", ts_start, ts_end)
+    patch_cut_info(
         cut_dir,
         fps=fps,
         counts=counts,
         times=times,
         ranges=ranges,
         duration_sec=duration_sec,
+        imu_samples=imu_n,
     )
     return f"fixed ({', '.join(actions)}) n={counts.get(ref)} span={span:.3f}s"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Align cut-bundle timestamps and correct meta.json duration/span."
+        description="Align cut-bundle timestamps and trim imu/. Does not modify meta.json."
     )
     parser.add_argument("--root", type=Path, help="Scan divide/ cut folders under this tree")
     parser.add_argument("--cut", type=Path, help="One exported cut folder")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--force", action="store_true", help="Rewrite even if already marked")
+    parser.add_argument("--force", action="store_true", help="Rewrite even if already aligned")
     args = parser.parse_args()
     if not args.root and not args.cut:
         parser.error("provide --root or --cut")

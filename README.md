@@ -81,7 +81,7 @@ pip install -r requirements.txt
 - 侧边栏按「未处理 / 有草稿 / 已切分 / 整段合格 / 整段不合格」筛选，列表里能看出做到哪里
 - 编辑草稿片段时，播放器跳到该段起点
 - 界面顶部与右侧表单展示纳入标准：双手可见、动作语义完整，两项都达标才能标「好」
-- 同时切分：left / right 两路视频、timestamps，并整份拷贝 IMU 与 calibrations（不处理 bright / bleft / audio；IMU 不按时间裁切）
+- 同时切分：left / right 两路视频、timestamps、IMU（按对齐后的绝对时间窗裁切），并原样拷贝 `meta.json` 与 calibrations（不处理 bright / bleft / audio）
 - 视频按帧号区间切分（精确 seek + `-frames:v` 卡死帧数），timestamps 保留源文件中的绝对时间戳
 - left / right 按绝对时间对齐：切后两路首帧、尾帧时间戳相同（原始数据可能差一帧）
 - 每段 `cut_info.json`，以及 `divide/logs/cut_history.jsonl`
@@ -120,11 +120,13 @@ python recover_truncated_mp4.py --session \
   /media/adminpc1/34C618D6C6189A66/头环/baai_ego_task/cs_0001/20260820/session_20260819_162034
 ```
 
-视频已经重封、只需补裁 sidecar 时：
+视频已经重封、只需补裁 timestamps / IMU / meta 时（视频能播但时间戳不对，或 `--root` 因已标记对齐而跳过）：
 
 ```bash
 python recover_truncated_mp4.py --session /path/to/session_xxx --sidecars-only
 ```
+
+`--root` 现在也会把「已有 `videos_recovered/` 但时间戳帧数/首尾仍对不齐」的 session 捡回来，不只看 `meta.json` 里的对齐标记。
 
 每路视频大约再占 5GB 磁盘。完成后刷新 Session 列表，工具会优先播 `videos_recovered/`。末尾可能缺最后一小段（文件被 5GB 卡断处）。
 
@@ -138,9 +140,9 @@ tail -f recover_remaining.log
 # 停止：kill $(cat recover_remaining.pid)
 ```
 
-## 已切分数据：timestamps 对齐 + meta 时间修正
+## 已切分数据：timestamps 对齐
 
-NAS / `divide/` 里旧切片的 `meta.json` 常仍带着整段 session 的 `span_sec`。可对切分结果单独跑（不改原始 session）：
+可对 `divide/` 旧切片单独跑（不改原始 session，也不改切片里的 `meta.json`）：
 
 ```bash
 cd /path/to/video_cutter
@@ -149,7 +151,7 @@ python align_cut_exports.py --root /mnt/nas/synnas/ego/baai_ego_task
 python align_cut_exports.py --cut /path/to/divide/good/session_xxx_动作_时间
 ```
 
-会原地对齐 left/right 首尾时间戳，并改写 `duration_sec` / `span_sec` / `synced_frames`（不备份 `meta.json` 和 `timestamps/`）。
+会原地对齐 left/right 首尾时间戳，按同一时间窗裁切 `imu/`，并更新 `cut_info.json`（不备份）。
 
 ```bash
 cd /path/to/video_cutter

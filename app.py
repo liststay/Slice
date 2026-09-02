@@ -499,7 +499,7 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
                 use_container_width=True,
             ):
                 out_paths = []
-                progress = st.progress(0.0, text="导出中...")
+                progress = st.progress(0.0, text="导出中（视频 / timestamps / IMU）...")
                 try:
                     done_n = 0
                     for i, d in enumerate(segs):
@@ -513,7 +513,7 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
                         done_n += 1
                         progress.progress(
                             done_n / max(len(pending), 1),
-                            text=f"已导出 {done_n}/{len(pending)}",
+                            text=f"已导出 {done_n}/{len(pending)}（含 IMU 裁切）",
                         )
                     session.exported_count = count_exported(session.path)
                     _persist_session(session)
@@ -551,8 +551,8 @@ def main() -> None:
 
     st.title("Ego 视频切分工具")
     st.caption(
-        "以 left.mp4 为主视角标注；按帧导出 left / right 视频 + timestamps + IMU + "
-        "calibrations；切片写入当前 session 下的 divide/。"
+        "以 left.mp4 为主视角标注；导出时按帧切 left / right 视频和 timestamps，"
+        "并按同一时间窗裁切 IMU；calibrations 整份拷贝。切片写入当前 session 的 divide/。"
     )
     st.warning(f"**{CUT_RULES_TITLE}**\n{CUT_RULES_MD}")
 
@@ -677,7 +677,7 @@ def main() -> None:
             f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole, session.reject_whole)}"
         )
         play_cam = st.selectbox(
-            "播放相机（导出只切 left / right）",
+            "播放相机（导出切 left / right 视频、timestamps 和 IMU）",
             session.cameras_present or ["left"],
             index=(session.cameras_present or ["left"]).index("left")
             if "left" in (session.cameras_present or ["left"])

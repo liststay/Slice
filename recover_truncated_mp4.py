@@ -541,6 +541,82 @@ def patch_meta(
     )
 
 
+_TS_EQ_EPS = 1e-6
+
+
+def timestamp_count_and_ends(path: Path) -> tuple[int, float, float] | None:
+    """Return (n, first_ts, last_ts) or None if the file is missing/empty."""
+    if not path.is_file():
+        return None
+    first = last = None
+    n = 0
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                ts = float(parts[1])
+            except ValueError:
+                continue
+            if first is None:
+                first = ts
+            last = ts
+            n += 1
+    if n == 0 or first is None or last is None:
+        return None
+    return n, first, last
+
+
+def playable_recovered_or_src(session_dir: Path, cam: str) -> Path | None:
+    recovered = session_dir / "videos_recovered" / f"{cam}.mp4"
+    if recovered.is_file() and not needs_moov_repair(recovered):
+        return recovered
+    src = session_dir / "videos" / f"{cam}.mp4"
+    if src.is_file() and not needs_moov_repair(src):
+        return src
+    return None
+
+
+def timestamps_need_repair(session_dir: Path) -> bool:
+    """True if timestamp files do not match playable video / each other."""
+    ends: dict[str, tuple[int, float, float]] = {}
+    for cam in CAMERAS:
+        ts_path = session_dir / "timestamps" / f"{cam}_timestamps.txt"
+        info = timestamp_count_and_ends(ts_path)
+        if info is None:
+            continue
+        video = playable_recovered_or_src(session_dir, cam)
+        if video is not None:
+            n_vid = probe_nb_frames(video)
+            if n_vid is not None and int(n_vid) != int(info[0]):
+                return True
+        ends[cam] = info
+    if len(ends) >= 2:
+        firsts = [v[1] for v in ends.values()]
+        lasts = [v[2] for v in ends.values()]
+        if any(abs(v - max(firsts)) > _TS_EQ_EPS for v in firsts):
+            return True
+        if any(abs(v - min(lasts)) > _TS_EQ_EPS for v in lasts):
+            return True
+        counts = {v[0] for v in ends.values()}
+        if len(counts) > 1:
+            return True
+    meta_path = session_dir / "meta.json"
+    if meta_path.is_file() and "left" in ends:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return True
+        synced = meta.get("synced_frames")
+        if synced is not None and int(synced) != int(ends["left"][0]):
+            return True
+    return False
+
+
 def sidecars_need_repair(
     session_dir: Path, frame_counts: dict[str, int] | None = None
 ) -> bool:
@@ -757,6 +833,12 @@ def recover_session(
             dst = out_dir / f"{cam}.mp4"
             if not needs_moov_repair(src):
                 print(f"skip {cam}: already playable", file=sys.stderr)
+                ref = dst if dst.is_file() and not needs_moov_repair(dst) else src
+                n = probe_nb_frames(ref)
+                if n:
+                    frame_counts[cam] = n
+                if dst.is_file() and not needs_moov_repair(dst):
+                    written.append(dst)
                 continue
             if dst.is_file() and not needs_moov_repair(dst):
                 print(f"skip {cam}: recovered already playable", file=sys.stderr)
@@ -814,7 +896,11 @@ def session_needs_recovery(session_dir: Path) -> bool:
             continue
         if needs_moov_repair(src):
             return True
-    return has_recovered and sidecars_need_repair(session_dir)
+    if not has_recovered:
+        return False
+    if sidecars_need_repair(session_dir):
+        return True
+    return timestamps_need_repair(session_dir)
 
 
 def recover_tree(root: Path, fps: float | None = None) -> None:
