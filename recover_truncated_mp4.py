@@ -23,15 +23,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from models import CAMERAS
+from runtime import ffmpeg_head, ffprobe, popen, run as _run_proc
 
-_FFMPEG_HEAD = [
-    "ffmpeg",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-nostdin",
-    "-y",
-]
 _START_CODE = b"\x00\x00\x00\x01"
 _MAX_NAL = 8_000_000
 BACKUP_DIR_NAME = "recovery_backup"
@@ -107,7 +100,7 @@ def recover_mp4(
     dst.parent.mkdir(parents=True, exist_ok=True)
     start, end = find_mdat_payload(src)
     cmd = [
-        *_FFMPEG_HEAD,
+        *ffmpeg_head(),
         "-fflags",
         "+genpts",
         "-f",
@@ -122,7 +115,7 @@ def recover_mp4(
         "+faststart",
         str(dst),
     ]
-    proc = subprocess.Popen(
+    proc = popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
@@ -153,9 +146,9 @@ def recover_mp4(
 
 
 def needs_moov_repair(path: Path) -> bool:
-    proc = subprocess.run(
+    proc = _run_proc(
         [
-            "ffprobe",
+            ffprobe(),
             "-v",
             "error",
             "-show_entries",
@@ -177,9 +170,9 @@ def probe_nb_frames(path: Path) -> int | None:
     if not path.is_file():
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_proc(
             [
-                "ffprobe",
+                ffprobe(),
                 "-v",
                 "error",
                 "-select_streams",
@@ -206,9 +199,9 @@ def probe_duration_sec(path: Path) -> float | None:
     if not path.is_file():
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_proc(
             [
-                "ffprobe",
+                ffprobe(),
                 "-v",
                 "error",
                 "-show_entries",
@@ -388,7 +381,7 @@ def trim_wav(src: Path, dst: Path, duration_sec: float) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + ".tmp.wav")
     cmd = [
-        *_FFMPEG_HEAD,
+        *ffmpeg_head(),
         "-i",
         str(src),
         "-t",
@@ -397,19 +390,19 @@ def trim_wav(src: Path, dst: Path, duration_sec: float) -> None:
         "copy",
         str(tmp),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_proc(cmd, capture_output=True, text=True)
     if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
         if tmp.exists():
             tmp.unlink()
         cmd = [
-            *_FFMPEG_HEAD,
+            *ffmpeg_head(),
             "-i",
             str(src),
             "-t",
             f"{duration_sec:.6f}",
             str(tmp),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = _run_proc(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             if tmp.exists():
                 tmp.unlink()
@@ -438,7 +431,7 @@ def trim_recovered_mp4(
         tmp.unlink()
     if start_frame == 0:
         cmd = [
-            *_FFMPEG_HEAD,
+            *ffmpeg_head(),
             "-i",
             str(src),
             "-map",
@@ -451,7 +444,7 @@ def trim_recovered_mp4(
             "make_zero",
             str(tmp),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = _run_proc(cmd, capture_output=True, text=True)
         if (
             proc.returncode == 0
             and tmp.is_file()

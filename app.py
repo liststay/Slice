@@ -19,6 +19,7 @@ import streamlit.components.v1 as components
 from cutter import append_cut_log, divide_output_root, export_segment
 from media_server import PORT, ensure_server
 from models import MAX_SEGMENT_SEC, Segment
+from runtime import default_data_root
 from session_loader import discover_sessions
 from workstate import (
     clear_draft,
@@ -34,7 +35,7 @@ from workstate import (
     save_reject_whole,
 )
 
-DEFAULT_DATA_ROOT = "/media/adminpc1/新加卷K/baai_ego_task"
+DEFAULT_DATA_ROOT = default_data_root()
 
 CUT_RULES_TITLE = "纳入数据集须同时满足（标「好」前看一眼）"
 CUT_RULES_MD = """

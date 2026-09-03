@@ -8,9 +8,12 @@ from urllib.parse import unquote, urlparse
 import threading
 import time
 
+from runtime import state_file
+
 PORT = 18765
-_HANDLER_VER = 4
-_STATE = Path("/tmp/video_cutter_media_root.txt")
+_HANDLER_VER = 6
+_MAX_RANGE = 4 * 1024 * 1024
+_STATE = state_file("video_cutter_media_root.txt")
 _PLAYER_PAGE = Path(__file__).resolve().parent / "player_component" / "index.html"
 _server: ThreadingHTTPServer | None = None
 
@@ -97,11 +100,12 @@ class _Handler(BaseHTTPRequestHandler):
         if root is None:
             self.send_error(503, "not ready")
             return None
-        rel = unquote(urlparse(self.path).path).lstrip("/")
-        if not rel or ".." in rel.split("/"):
+        rel = unquote(urlparse(self.path).path).replace("\\", "/").lstrip("/")
+        parts = [p for p in rel.split("/") if p and p != "."]
+        if not parts or ".." in parts:
             self.send_error(400)
             return None
-        fpath = (root / rel).resolve()
+        fpath = (root.joinpath(*parts)).resolve()
         try:
             fpath.relative_to(root)
         except ValueError:
@@ -151,12 +155,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        length = max(0, end - start + 1)
+        if send_body and length > _MAX_RANGE:
+            end = start + _MAX_RANGE - 1
+            length = _MAX_RANGE
+            partial = True
         if partial:
             self.send_response(206)
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         else:
             self.send_response(200)
-        length = max(0, end - start + 1)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
@@ -169,7 +177,7 @@ class _Handler(BaseHTTPRequestHandler):
             f.seek(start)
             remaining = length
             while remaining > 0:
-                chunk = f.read(min(1024 * 1024, remaining))
+                chunk = f.read(min(256 * 1024, remaining))
                 if not chunk:
                     break
                 try:

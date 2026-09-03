@@ -39,18 +39,20 @@
     button.primary { background: #ff4b4b; color: #fff; border-color: #ff4b4b; }
     button.primary:hover { background: #d03636; color: #fff; }
     .time { font-variant-numeric: tabular-nums; font-size: 14px; min-width: 168px; }
-    .hint { margin-top: 6px; font-size: 12px; color: #808495; line-height: 1.4; }
+    .scrub-row { margin-top: 6px; display: flex; align-items: center; }
+    #scrub { width: 100%; cursor: pointer; }
+    .hint { margin-top: 6px; font-size: 12px; color: #808495; line-height: 1.45; white-space: normal; }
   </style>
 </head>
 <body>
   <div class="stage dual" id="stage">
     <div class="pane" id="paneL">
       <div class="label">left</div>
-      <video id="vL" controls preload="auto"></video>
+      <video id="vL" preload="auto" playsinline muted></video>
     </div>
     <div class="pane" id="paneR">
       <div class="label">right</div>
-      <video id="vR" controls preload="auto" muted></video>
+      <video id="vR" preload="auto" playsinline muted></video>
     </div>
   </div>
   <div class="bar">
@@ -63,13 +65,18 @@
     <button id="fwd15" type="button">+15s</button>
     <div class="time" id="cur">播放进度 00:00.000</div>
   </div>
-  <div class="hint">左右画面同步播停与跳转。拖动任一路进度条后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
+  <div class="scrub-row">
+    <input id="scrub" type="range" min="0" max="1000" value="0" step="1" />
+  </div>
+  <div class="hint">左右同步播停与跳转。用下方进度条或 ±1s / ±15s 定位后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
   <script>
+    const PLAYER_VER = 6;
     const left = document.getElementById("vL");
     const right = document.getElementById("vR");
     const stage = document.getElementById("stage");
     const playBtn = document.getElementById("play");
     const cur = document.getElementById("cur");
+    const scrub = document.getElementById("scrub");
     const SEEK_KEY = "cutter_player_seek_n";
     let lastSeekN = null;
     try { lastSeekN = sessionStorage.getItem(SEEK_KEY); } catch (e) {}
@@ -80,17 +87,21 @@
     let pendingTime = null;
     let skipTimer = null;
     let seeking = false;
+    let seekGen = 0;
+    let resumeAfterSeek = false;
+    let dragging = false;
 
     function follower() { return hasRight ? right : null; }
     function mediaDuration() {
-      return Number.isFinite(left.duration) && left.duration > 0 ? left.duration : 1e9;
+      const d = left.duration;
+      return Number.isFinite(d) && d > 0 ? d : 1e9;
     }
     function shownTime() {
       if (pendingTime != null) return pendingTime;
       return left.currentTime || 0;
     }
     function busySeek() {
-      return seeking || skipTimer != null || inSync();
+      return seeking || skipTimer != null || dragging || inSync();
     }
     function fmt(t) {
       if (!Number.isFinite(t) || t < 0) t = 0;
@@ -99,8 +110,14 @@
       return String(m).padStart(2, "0") + ":" + s.toFixed(3).padStart(6, "0");
     }
     function tick() {
-      cur.textContent = "播放进度 " + fmt(shownTime());
-      playBtn.textContent = left.paused ? "播放" : "暂停";
+      const t = shownTime();
+      cur.textContent = "播放进度 " + fmt(t);
+      const playing = (seeking || skipTimer || dragging) ? resumeAfterSeek : !left.paused;
+      playBtn.textContent = playing ? "暂停" : "播放";
+      const dur = mediaDuration();
+      if (Number.isFinite(dur) && dur > 0 && dur < 1e8 && !dragging) {
+        scrub.value = String(Math.round((t / dur) * 1000));
+      }
     }
     function send(type, data) {
       window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
@@ -122,6 +139,7 @@
     function playBoth() {
       beginSync();
       pinEndUntil = 0;
+      resumeAfterSeek = false;
       playSafe(left);
       playSafe(follower());
       endSync();
@@ -147,7 +165,7 @@
         videoH = Math.round((width / n) * left.videoHeight / left.videoWidth);
       }
       let cap = 720;
-      try { cap = Math.floor((window.parent.innerHeight || 900) * 0.62); } catch (e) {}
+      try { cap = Math.floor((window.parent.innerHeight || 900) * 0.58); } catch (e) {}
       videoH = Math.min(Math.max(videoH, 280), cap);
       left.style.minHeight = videoH + "px";
       left.style.height = videoH + "px";
@@ -157,7 +175,10 @@
       }
       const bar = document.querySelector(".bar");
       const hint = document.querySelector(".hint");
-      const extra = (bar ? bar.offsetHeight : 48) + (hint ? hint.offsetHeight : 24) + 28;
+      const scrubRow = document.querySelector(".scrub-row");
+      const extra = (bar ? bar.offsetHeight : 48) +
+        (scrubRow ? scrubRow.offsetHeight : 24) +
+        (hint ? hint.offsetHeight : 24) + 28;
       const total = videoH + extra;
       if (total === lastHeight) return;
       lastHeight = total;
@@ -167,7 +188,7 @@
       const rawHost = window.location.hostname || "127.0.0.1";
       const host = rawHost === "localhost" ? "127.0.0.1" : rawHost;
       return "http://" + host + ":" + port + "/" + String(file).replace(/^\//, "") +
-        "?sid=" + encodeURIComponent(sid || "");
+        "?sid=" + encodeURIComponent(sid || "") + "&pv=" + PLAYER_VER;
     }
     function applyOne(video, file, port, sid) {
       if (!file || !port) {
@@ -198,10 +219,7 @@
       pinEndUntil = 0;
       const target = Number(t);
       if (!Number.isFinite(target) || target < 0) return;
-      const go = () => {
-        pendingTime = target;
-        commitSeek(target);
-      };
+      const go = () => commitSeek(target, false);
       if (left.readyState >= 1) go();
       else left.addEventListener("loadedmetadata", go, { once: true });
     }
@@ -213,34 +231,74 @@
         n: Date.now(),
       }, "*");
     }
-    function commitSeek(t) {
+    function waitSeeked(v, target, gen) {
+      return new Promise(function (resolve) {
+        if (!v || !v.dataset.src) {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const finish = function () {
+          if (settled) return;
+          settled = true;
+          v.removeEventListener("seeked", onSeeked);
+          v.removeEventListener("error", finish);
+          resolve();
+        };
+        const onSeeked = function () {
+          if (gen !== seekGen) {
+            finish();
+            return;
+          }
+          if (Math.abs((v.currentTime || 0) - target) < 0.6) finish();
+        };
+        v.addEventListener("seeked", onSeeked);
+        v.addEventListener("error", finish);
+        if (v.readyState >= 2 && Math.abs((v.currentTime || 0) - target) < 0.08) {
+          finish();
+        }
+        window.setTimeout(finish, 5000);
+      });
+    }
+    function commitSeek(t, resume) {
       const target = Math.min(mediaDuration(), Math.max(0, t));
+      const gen = ++seekGen;
       pendingTime = target;
       seeking = true;
+      if (resume == null) resume = resumeAfterSeek;
+      resumeAfterSeek = !!resume;
+      tick();
       beginSync();
+      left.pause();
+      if (follower()) follower().pause();
       setTime(left, target);
       setTime(follower(), target);
       endSync();
-      tick();
-      window.setTimeout(function () {
-        if (pendingTime === target) {
-          pendingTime = null;
-          seeking = false;
-        }
-      }, 1500);
+      const waiters = [waitSeeked(left, target, gen)];
+      if (follower()) waiters.push(waitSeeked(follower(), target, gen));
+      Promise.all(waiters).then(function () {
+        if (gen !== seekGen) return;
+        pendingTime = null;
+        seeking = false;
+        if (resumeAfterSeek) playBoth();
+        else tick();
+      });
     }
     function skipBy(dt) {
+      if (!seeking && skipTimer == null && !dragging) {
+        resumeAfterSeek = !left.paused;
+      }
       pendingTime = Math.min(mediaDuration(), Math.max(0, shownTime() + dt));
       tick();
       if (skipTimer) window.clearTimeout(skipTimer);
       skipTimer = window.setTimeout(function () {
         skipTimer = null;
-        commitSeek(pendingTime);
-      }, 150);
+        commitSeek(pendingTime, resumeAfterSeek);
+      }, 280);
     }
     function bindSync(from, to) {
       from.addEventListener("play", () => {
-        if (inSync()) return;
+        if (inSync() || busySeek()) return;
         beginSync();
         pinEndUntil = 0;
         playSafe(to);
@@ -248,24 +306,11 @@
         tick();
       });
       from.addEventListener("pause", () => {
-        if (inSync()) return;
+        if (inSync() || busySeek()) return;
         beginSync();
         if (to) to.pause();
         endSync();
         tick();
-      });
-      from.addEventListener("seeked", () => {
-        if (busySeek() || !to) return;
-        beginSync();
-        setTime(to, from.currentTime || 0);
-        endSync();
-        tick();
-      });
-      from.addEventListener("ratechange", () => {
-        if (inSync() || !to) return;
-        beginSync();
-        to.playbackRate = from.playbackRate;
-        endSync();
       });
     }
 
@@ -274,20 +319,13 @@
     left.muted = true;
     right.muted = true;
     left.addEventListener("timeupdate", () => {
-      if (skipTimer || seeking) return;
-      tick();
-    });
-    left.addEventListener("seeked", () => {
-      if (skipTimer) return;
-      if (pendingTime != null && Math.abs((left.currentTime || 0) - pendingTime) < 0.35) {
-        pendingTime = null;
-        seeking = false;
-      }
+      if (skipTimer || seeking || dragging) return;
       tick();
     });
     left.addEventListener("ended", () => {
       pinEndUntil = Date.now() + 500;
       if (!Number.isFinite(left.duration) || left.duration <= 0) return;
+      resumeAfterSeek = false;
       beginSync();
       left.pause();
       if (follower()) follower().pause();
@@ -338,7 +376,9 @@
     window.setInterval(() => {
       if (!hasRight || busySeek()) return;
       if (!left.paused && right.paused) {
-        setTime(right, left.currentTime || 0);
+        if (Math.abs((right.currentTime || 0) - (left.currentTime || 0)) > 0.35) {
+          setTime(right, left.currentTime || 0);
+        }
         playSafe(right);
         return;
       }
@@ -347,14 +387,20 @@
         return;
       }
       if (left.paused || right.paused) return;
-      if (Math.abs((left.currentTime || 0) - (right.currentTime || 0)) > 0.12) {
+      if (Math.abs((left.currentTime || 0) - (right.currentTime || 0)) > 0.35) {
         beginSync();
         setTime(right, left.currentTime || 0);
         endSync();
       }
-    }, 250);
+    }, 400);
 
     playBtn.onclick = () => {
+      if (seeking || skipTimer) {
+        resumeAfterSeek = !resumeAfterSeek;
+        if (!resumeAfterSeek) pauseBoth();
+        tick();
+        return;
+      }
       if (left.paused) playBoth();
       else pauseBoth();
     };
@@ -364,6 +410,26 @@
     document.getElementById("back").onclick = () => skipBy(-1);
     document.getElementById("fwd").onclick = () => skipBy(1);
     document.getElementById("fwd15").onclick = () => skipBy(15);
+
+    scrub.addEventListener("pointerdown", () => {
+      dragging = true;
+      resumeAfterSeek = !left.paused;
+      if (!left.paused) pauseBoth();
+    });
+    scrub.addEventListener("input", () => {
+      const dur = mediaDuration();
+      pendingTime = (Number(scrub.value) / 1000) * (Number.isFinite(dur) && dur > 0 ? dur : 0);
+      tick();
+    });
+    function finishScrub() {
+      if (!dragging) return;
+      dragging = false;
+      const dur = mediaDuration();
+      const t = (Number(scrub.value) / 1000) * (Number.isFinite(dur) && dur > 0 ? dur : 0);
+      commitSeek(t, resumeAfterSeek);
+    }
+    scrub.addEventListener("change", finishScrub);
+    scrub.addEventListener("pointerup", finishScrub);
 
     window.addEventListener("message", (event) => {
       if (!event.data || event.data.type !== "streamlit:render") return;

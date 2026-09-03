@@ -23,6 +23,7 @@ except Exception:
     pass
 
 from models import CAMERAS
+from runtime import check_output, ffprobe
 from workstate import (
     count_draft_unexported,
     count_exported,
@@ -92,9 +93,9 @@ def _probe_video(path: Path) -> tuple[float, float, int]:
     duration = n / fps if fps > 0 else 0.0
     # Prefer ffprobe duration when available (more accurate for some encodings)
     try:
-        out = subprocess.check_output(
+        out = check_output(
             [
-                "ffprobe",
+                ffprobe(),
                 "-v",
                 "error",
                 "-show_entries",

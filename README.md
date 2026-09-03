@@ -2,25 +2,49 @@
 
 人工可视化切分多路相机 session：并排播放 `left.mp4` / `right.mp4` 同步标注起止，按帧导出 left / right 切片到当前 session 下的 `divide/`。原 videos / timestamps / imu / audio / calibrations 只读保留。
 
-## 环境与依赖（一键）
+## 环境与依赖
 
 需要：
 
-- Python 3.10+（脚本默认建 3.11）
-- `ffmpeg` / `ffprobe`（切视频、探测时长）
-- Python 包见 [`requirements.txt`](requirements.txt)：`streamlit`、`opencv-python-headless`、`numpy`
+- Python 3.10+
+- `ffmpeg` / `ffprobe`（在 PATH 里）
+- Python 包见 [`requirements.txt`](requirements.txt)
 
-在项目目录执行一条命令即可：有 conda 就建名为 `video_cutter` 的环境，没有 conda 就在本目录建 `.venv`，并安装 Python 依赖；缺 ffmpeg 时会尝试 `apt-get install`。
+Linux / macOS：
 
 ```bash
-cd /video_cutter
+cd /path/to/video_cutter
 bash setup.sh
 ```
 
-换环境名或 Python 版本：
+Windows（cmd）：
+
+```bat
+cd C:\path\to\video_cutter
+setup.bat
+```
+
+任意系统也都可以：
 
 ```bash
-ENV_NAME=video_cutter PYTHON_VERSION=3.11 bash setup.sh
+python setup_env.py
+```
+
+有 conda 会建名为 `video_cutter` 的环境；没有则在本目录建 `.venv`。Linux 上若缺 ffmpeg，会尝试 `apt-get install`。
+
+安装 Python 包默认走**清华 PyPI 镜像**。换源或改回官方：
+
+```bash
+VIDEO_CUTTER_PIP_MIRROR=aliyun python setup_env.py   # 阿里云
+VIDEO_CUTTER_PIP_MIRROR=ustc python setup_env.py     # 中科大
+VIDEO_CUTTER_PIP_MIRROR=official python setup_env.py # 官方 pypi.org
+```
+
+换环境名或强制用 venv：
+
+```bash
+ENV_NAME=video_cutter PYTHON_VERSION=3.11 python setup_env.py
+VIDEO_CUTTER_VENV=1 python setup_env.py
 ```
 
 ### 以后每次启动
@@ -33,7 +57,7 @@ cd /path/to/video_cutter
 streamlit run app.py
 ```
 
-venv：
+venv（Linux / macOS）：
 
 ```bash
 cd /path/to/video_cutter
@@ -41,35 +65,48 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-浏览器打开终端里给出的地址（一般是 `http://localhost:8501`）。侧边栏可改数据根，默认：
+venv（Windows）：
 
-`/media/adminpc1/34C618D6C6189A66/头环/baai_ego_task`
+```bat
+cd C:\path\to\video_cutter
+.venv\Scripts\activate
+streamlit run app.py
+```
+
+浏览器打开终端里给出的地址（一般是 `http://localhost:8501`）。侧边栏可改数据根；也可设环境变量 `VIDEO_CUTTER_DATA_ROOT`。默认会在本机已有的 `baai_ego_task` 目录里挑一个（含常见 Linux 挂载盘和 `D:\baai_ego_task` 等）。
 
 切片写到所选 `session_*/divide/`。
 
-### 手动安装（不跑 setup.sh 时）
+Windows 额外注意：把 ffmpeg 的 `bin` 加到系统 PATH 后**新开一个终端**再启动。本机防火墙若拦截 `8501` / `18765` 端口，需允许 Python。
+
+### 手动安装（不跑 setup 时）
 
 系统 ffmpeg：
 
-```bash
-sudo apt-get update
-sudo apt-get install -y ffmpeg
-```
+- Ubuntu/Debian：`sudo apt-get update && sudo apt-get install -y ffmpeg`
+- Windows：`winget install Gyan.FFmpeg` 或从 https://www.gyan.dev/ffmpeg/builds/ 安装
+- macOS：`brew install ffmpeg`
+- 或：`conda install -y -c conda-forge ffmpeg`
 
 conda：
 
 ```bash
 conda create -y -n video_cutter python=3.11 pip
 conda activate video_cutter
-pip install -r requirements.txt
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 ```
 
 venv：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m venv .venv
+```
+
+Linux/macOS：`source .venv/bin/activate`  
+Windows：`.venv\Scripts\activate`
+
+```bash
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 ```
 
 ## 功能
@@ -103,6 +140,8 @@ pip install -r requirements.txt
 export VIDEO_CUTTER_ENCODER=libx264    # 只用 CPU
 export VIDEO_CUTTER_ENCODER=h264_nvenc # 只试 NVIDIA，失败再 CPU
 ```
+
+Windows cmd：`set VIDEO_CUTTER_ENCODER=libx264`
 
 ## 挽救截断视频（moov atom not found）
 

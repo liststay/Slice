@@ -13,6 +13,7 @@ import shutil
 import subprocess
 
 from models import EXPORT_CAMERAS, Segment
+from runtime import ffmpeg, ffmpeg_head, ffprobe, run as _run_proc
 from session_loader import (
     SessionInfo,
     first_index_ge,
@@ -22,21 +23,13 @@ from session_loader import (
 )
 
 DIVIDE_DIR_NAME = "divide"
-_FFMPEG_HEAD = [
-    "ffmpeg",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-nostdin",
-    "-y",
-]
 _ffmpeg_encoders: set[str] | None = None
 _failed_hw: set[str] = set()
 _ACCURATE_PREROLL_SEC = 5.0
 
 
 def _run(cmd: list[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_proc(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Command failed ({proc.returncode}): {' '.join(cmd)}\n"
@@ -50,8 +43,8 @@ def _list_ffmpeg_encoders() -> set[str]:
         return _ffmpeg_encoders
     found: set[str] = set()
     try:
-        proc = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+        proc = _run_proc(
+            [ffmpeg(), "-hide_banner", "-encoders"],
             capture_output=True,
             text=True,
             timeout=8,
@@ -116,9 +109,9 @@ def probe_nb_frames(path: Path) -> int | None:
     if not path.is_file():
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_proc(
             [
-                "ffprobe",
+                ffprobe(),
                 "-v",
                 "error",
                 "-select_streams",
@@ -136,9 +129,9 @@ def probe_nb_frames(path: Path) -> int | None:
         text = (proc.stdout or "").strip()
         if text and text not in ("N/A", "0"):
             return int(text)
-        proc = subprocess.run(
+        proc = _run_proc(
             [
-                "ffprobe",
+                ffprobe(),
                 "-v",
                 "error",
                 "-select_streams",
@@ -207,7 +200,7 @@ def cut_video(
     frame_limit = ["-vsync", "cfr", "-frames:v", str(n_frames)]
 
     copy_cmd = [
-        *_FFMPEG_HEAD,
+        *ffmpeg_head(),
         "-fflags",
         "+fastseek",
         "-ss",
@@ -235,7 +228,7 @@ def cut_video(
     accurate = _accurate_seek_args(src, t0)
     for name, extra in _hw_encoder_attempts():
         cmd = [
-            *_FFMPEG_HEAD,
+            *ffmpeg_head(),
             *accurate,
             "-map",
             "0:v:0",
@@ -253,7 +246,7 @@ def cut_video(
         _unlink_if_exists(dst)
 
     reenc_cmd = [
-        *_FFMPEG_HEAD,
+        *ffmpeg_head(),
         *accurate,
         "-map",
         "0:v:0",
