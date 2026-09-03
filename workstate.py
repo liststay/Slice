@@ -9,6 +9,7 @@ import json
 import uuid
 
 from models import Segment
+from runtime import ensure_writable_dir, write_text_atomic
 
 DRAFT_FILENAME = "draft_segments.json"
 
@@ -16,13 +17,7 @@ DRAFT_FILENAME = "draft_segments.json"
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        tmp.replace(path)
-    except OSError:
-        path.write_text(text, encoding="utf-8")
-        tmp.unlink(missing_ok=True)
+    write_text_atomic(path, text)
 
 
 def draft_path(session_dir: Path) -> Path:
@@ -168,6 +163,7 @@ def save_draft(
 ) -> Path:
     path = draft_path(session_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_writable_dir(path.parent)
     payload = {
         "version": 1,
         "session_id": session_id,

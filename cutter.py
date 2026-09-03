@@ -13,7 +13,16 @@ import shutil
 import subprocess
 
 from models import EXPORT_CAMERAS, Segment
-from runtime import ffmpeg, ffmpeg_head, ffprobe, run as _run_proc
+from runtime import (
+    ffmpeg,
+    ffmpeg_arg,
+    ffmpeg_head,
+    ffprobe,
+    ensure_writable_dir,
+    format_io_error,
+    replace_file,
+    run as _run_proc,
+)
 from session_loader import (
     SessionInfo,
     first_index_ge,
@@ -29,7 +38,10 @@ _ACCURATE_PREROLL_SEC = 5.0
 
 
 def _run(cmd: list[str]) -> None:
-    proc = _run_proc(cmd, capture_output=True, text=True)
+    try:
+        proc = _run_proc(cmd, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"Command failed ({proc.returncode}): {' '.join(cmd)}\n"
@@ -120,7 +132,7 @@ def probe_nb_frames(path: Path) -> int | None:
                 "stream=nb_frames",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(path),
+                ffmpeg_arg(path),
             ],
             capture_output=True,
             text=True,
@@ -141,7 +153,7 @@ def probe_nb_frames(path: Path) -> int | None:
                 "stream=nb_read_packets",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(path),
+                ffmpeg_arg(path),
             ],
             capture_output=True,
             text=True,
@@ -156,8 +168,11 @@ def probe_nb_frames(path: Path) -> int | None:
 
 
 def _unlink_if_exists(path: Path) -> None:
-    if path.exists():
-        path.unlink()
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 def _frame_count_ok(dst: Path, n_frames: int | None) -> bool:
@@ -175,7 +190,7 @@ def _accurate_seek_args(src: Path, t0: float) -> list[str]:
     args: list[str] = []
     if t0 > preroll:
         args += ["-ss", f"{t0 - preroll:.6f}"]
-    args += ["-i", str(src)]
+    args += ["-i", ffmpeg_arg(src)]
     if t0 > 0:
         args += ["-ss", f"{preroll if t0 > preroll else t0:.6f}"]
     return args
@@ -198,76 +213,91 @@ def cut_video(
         t0 = start_frame / fps
     duration = n_frames / fps
     frame_limit = ["-vsync", "cfr", "-frames:v", str(n_frames)]
+    src_arg = ffmpeg_arg(src)
+    work = dst.with_name(dst.name + ".partial")
+    _unlink_if_exists(work)
+    work_arg = ffmpeg_arg(work)
 
-    copy_cmd = [
-        *ffmpeg_head(),
-        "-fflags",
-        "+fastseek",
-        "-ss",
-        f"{t0:.6f}",
-        "-i",
-        str(src),
-        "-t",
-        f"{duration:.6f}",
-        "-map",
-        "0:v:0",
-        "-c",
-        "copy",
-        "-avoid_negative_ts",
-        "make_zero",
-        str(dst),
-    ]
+    def _keep() -> None:
+        if work.resolve() != dst.resolve():
+            replace_file(work, dst)
+        _unlink_if_exists(work)
+
     try:
-        _run(copy_cmd)
-        if _frame_count_ok(dst, n_frames):
-            return
-    except RuntimeError:
-        pass
-    _unlink_if_exists(dst)
+        copy_cmd = [
+            *ffmpeg_head(),
+            "-fflags",
+            "+fastseek",
+            "-ss",
+            f"{t0:.6f}",
+            "-i",
+            src_arg,
+            "-t",
+            f"{duration:.6f}",
+            "-map",
+            "0:v:0",
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
+            work_arg,
+        ]
+        try:
+            _run(copy_cmd)
+            if _frame_count_ok(work, n_frames):
+                _keep()
+                return
+        except RuntimeError:
+            pass
+        _unlink_if_exists(work)
 
-    accurate = _accurate_seek_args(src, t0)
-    for name, extra in _hw_encoder_attempts():
-        cmd = [
+        accurate = _accurate_seek_args(src, t0)
+        for name, extra in _hw_encoder_attempts():
+            cmd = [
+                *ffmpeg_head(),
+                *accurate,
+                "-map",
+                "0:v:0",
+                *frame_limit,
+                *extra,
+                "-an",
+                work_arg,
+            ]
+            try:
+                _run(cmd)
+                if _frame_count_ok(work, n_frames):
+                    _keep()
+                    return
+            except RuntimeError:
+                _failed_hw.add(name)
+            _unlink_if_exists(work)
+
+        reenc_cmd = [
             *ffmpeg_head(),
             *accurate,
             "-map",
             "0:v:0",
             *frame_limit,
-            *extra,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "18",
+            "-threads",
+            "0",
             "-an",
-            str(dst),
+            work_arg,
         ]
-        try:
-            _run(cmd)
-            if _frame_count_ok(dst, n_frames):
-                return
-        except RuntimeError:
-            _failed_hw.add(name)
-        _unlink_if_exists(dst)
-
-    reenc_cmd = [
-        *ffmpeg_head(),
-        *accurate,
-        "-map",
-        "0:v:0",
-        *frame_limit,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "18",
-        "-threads",
-        "0",
-        "-an",
-        str(dst),
-    ]
-    _run(reenc_cmd)
-    if not _frame_count_ok(dst, n_frames):
-        got = probe_nb_frames(dst)
-        raise RuntimeError(
-            f"cut_video frame count mismatch: expected {n_frames}, got {got} ({dst})"
-        )
+        _run(reenc_cmd)
+        if not _frame_count_ok(work, n_frames):
+            got = probe_nb_frames(work)
+            raise RuntimeError(
+                f"cut_video frame count mismatch: expected {n_frames}, got {got} ({dst})"
+            )
+        _keep()
+    finally:
+        _unlink_if_exists(work)
 
 
 _TS_EQ_EPS = 1e-6
@@ -417,7 +447,7 @@ def cut_imu_csv(src: Path, dst: Path, ts_start: float, ts_end: float) -> int:
             writer.writerow(row)
             n += 1
     if same:
-        out_path.replace(dst)
+        replace_file(out_path, dst)
     return n
 
 
@@ -473,6 +503,10 @@ def export_segment(
         )
 
     output_root = Path(output_root) if output_root is not None else divide_output_root(session)
+    try:
+        ensure_writable_dir(output_root)
+    except OSError as exc:
+        raise PermissionError(format_io_error(exc, output_root)) from exc
     quality_dir = output_root / ("good" if segment.quality == "good" else "bad")
     quality_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")

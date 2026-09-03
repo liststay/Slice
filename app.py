@@ -19,7 +19,7 @@ import streamlit.components.v1 as components
 from cutter import append_cut_log, divide_output_root, export_segment
 from media_server import PORT, ensure_server
 from models import MAX_SEGMENT_SEC, Segment
-from runtime import default_data_root
+from runtime import default_data_root, dir_is_writable, format_io_error, normalize_data_root
 from session_loader import discover_sessions
 from workstate import (
     clear_draft,
@@ -220,10 +220,22 @@ def _submit_segment() -> None:
     st.session_state.player_seek_t = float(t1)
     path = Path(st.session_state.get("loaded_session_path") or "")
     if path:
-        save_draft(path, path.name, list(st.session_state.segments), _form_state())
+        _save_draft_now(path, st.session_state.segments)
         if is_keep_whole(path) or is_reject_whole(path):
             clear_review(path)
             _set_review_flags(path, keep_whole=False, reject_whole=False)
+
+
+def _save_draft_now(path: Path, segs: list, form: dict | None = None) -> None:
+    try:
+        save_draft(
+            path,
+            path.name,
+            list(segs),
+            form if form is not None else _form_state(),
+        )
+    except OSError as exc:
+        st.session_state.add_errors = [format_io_error(exc, path / "divide")]
 
 
 def _remove_export_folder(session_dir: Path, output_dir: str) -> bool:
@@ -274,7 +286,7 @@ def _delete_segment(segment_id: str) -> None:
         remaining = list(st.session_state.segments)
         form = _form_state()
         if remaining or _form_dirty(form, float(st.session_state.get("_duration") or 0.0)):
-            save_draft(path, path.name, remaining, form)
+            _save_draft_now(path, remaining, form)
         else:
             clear_draft(path)
 
@@ -310,7 +322,7 @@ def _persist_session(session) -> None:
     segs = list(st.session_state.get("segments") or [])
     form = _form_state()
     if segs or _form_dirty(form, session.duration_sec):
-        save_draft(session.path, session.session_id, segs, form)
+        _save_draft_now(session.path, segs, form)
     elif not segs:
         clear_draft(session.path)
 
@@ -331,7 +343,11 @@ def _mark_keep_whole() -> None:
         st.session_state.add_errors = ["未加载 session"]
         return
     note = str(st.session_state.get("note_input") or "").strip()
-    save_keep_whole(path, path.name, note=note)
+    try:
+        save_keep_whole(path, path.name, note=note)
+    except OSError as exc:
+        st.session_state.add_errors = [format_io_error(exc, path / "divide")]
+        return
     _set_review_flags(path, keep_whole=True, reject_whole=False)
     st.session_state.add_errors = []
     st.session_state.flash = "已标记：整段合格，无需切分（不复制视频）"
@@ -343,7 +359,11 @@ def _mark_reject_whole() -> None:
         st.session_state.add_errors = ["未加载 session"]
         return
     note = str(st.session_state.get("note_input") or "").strip()
-    save_reject_whole(path, path.name, note=note)
+    try:
+        save_reject_whole(path, path.name, note=note)
+    except OSError as exc:
+        st.session_state.add_errors = [format_io_error(exc, path / "divide")]
+        return
     _set_review_flags(path, keep_whole=False, reject_whole=True)
     st.session_state.add_errors = []
     st.session_state.flash = "已标记：整段不合格（不复制视频）"
@@ -577,6 +597,8 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
                     st.success(
                         f"导出完成，共 {len(out_paths)} 段 → `{output_root}`"
                     )
+                except OSError as exc:
+                    st.error(format_io_error(exc, output_root))
                 except Exception as exc:
                     st.exception(exc)
         with e2:
@@ -615,7 +637,9 @@ def main() -> None:
 
     with st.sidebar:
         st.header("路径设置")
-        data_root = st.text_input("数据根目录", value=DEFAULT_DATA_ROOT)
+        data_root = normalize_data_root(
+            st.text_input("数据根目录", value=DEFAULT_DATA_ROOT)
+        )
         refresh = st.button("刷新 Session 列表", use_container_width=True)
 
         if refresh or "session_list" not in st.session_state:
@@ -724,6 +748,11 @@ def main() -> None:
         st.divider()
         st.markdown(f"**路径**: `{session.path}`")
         st.markdown(f"**输出**: `{output_root}`")
+        if not dir_is_writable(output_root):
+            st.error(
+                f"没有文件夹读写权限：`{output_root}`。"
+                "草稿和导出都写在这里。请给当前 Windows 用户加上「修改」权限，或换到可写的数据盘。"
+            )
         st.markdown(f"**时长**: {session.duration_sec:.2f}s")
         st.markdown(f"**FPS**: {session.fps:.2f}")
         st.markdown(f"**相机**: {', '.join(session.cameras_present)}")

@@ -127,11 +127,13 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 ## 导出编码（跨机器）
 
-顺序始终是卡死输出帧数（与标注帧区间一致）：
+顺序始终是卡死输出帧数（与标注帧区间、timestamps 行数一致）：
 
 1. **stream copy**（仅当输出帧数正好等于目标才保留）
 2. 精确 seek 后硬件 H.264：NVIDIA `h264_nvenc` → Intel `h264_qsv` → AMD `h264_amf`，并用 `-frames:v` 卡死帧数
 3. 都没有或失败 → **CPU `libx264 -preset ultrafast`**，同样卡死帧数
+
+Windows 上中间文件写在目标盘同目录的 `.partial`，再改名为最终 mp4，避免先写 C 盘临时目录再整段拷贝。
 
 
 需要强制某条路径时：

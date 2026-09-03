@@ -16,10 +16,16 @@ EXPORT_CAMERAS = ("left", "right")
 
 
 def sanitize_name(name: str) -> str:
-    """Replace characters unsafe for filesystem paths."""
+    """Replace characters unsafe for filesystem paths (Windows + POSIX)."""
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", name.strip())
     cleaned = re.sub(r"_+", "_", cleaned).strip("._")
-    return cleaned or "unnamed"
+    if cleaned.upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    }:
+        cleaned = f"_{cleaned}"
+    return cleaned[:80] or "unnamed"
 
 
 @dataclass

@@ -23,7 +23,7 @@ except Exception:
     pass
 
 from models import CAMERAS
-from runtime import check_output, ffprobe
+from runtime import check_output, ffmpeg_arg, ffprobe
 from workstate import (
     count_draft_unexported,
     count_exported,
@@ -102,7 +102,7 @@ def _probe_video(path: Path) -> tuple[float, float, int]:
                 "format=duration",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(path),
+                ffmpeg_arg(path),
             ],
             text=True,
             stderr=subprocess.DEVNULL,
@@ -151,20 +151,30 @@ def load_session(session_path: Path | str) -> SessionInfo:
 
 def discover_sessions(data_root: Path | str) -> list[SessionInfo]:
     """Find session_* directories that contain videos/left.mp4 under data_root."""
-    root = Path(data_root)
-    if not root.is_dir():
+    root = Path(str(data_root).strip().strip('"').strip("'")).expanduser()
+    try:
+        if not root.is_dir():
+            return []
+    except OSError:
         return []
 
     found: list[Path] = []
     # Direct children or nested: device/date/session_*
     # Skip session_*/divide/** (exported cuts are also named session_*)
-    for p in root.rglob("session_*"):
-        if not p.is_dir():
+    try:
+        walker = root.rglob("session_*")
+    except OSError:
+        return []
+    for p in walker:
+        try:
+            if not p.is_dir():
+                continue
+            if "divide" in p.parts:
+                continue
+            if (p / "videos" / "left.mp4").is_file():
+                found.append(p)
+        except OSError:
             continue
-        if "divide" in p.parts:
-            continue
-        if (p / "videos" / "left.mp4").is_file():
-            found.append(p)
 
     found = sorted(set(found), key=lambda x: x.name)
     sessions: list[SessionInfo] = []
