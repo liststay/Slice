@@ -11,8 +11,8 @@ import time
 from runtime import state_file
 
 PORT = 18765
-_HANDLER_VER = 6
-_MAX_RANGE = 4 * 1024 * 1024
+_HANDLER_VER = 7
+_MAX_RANGE = 8 * 1024 * 1024
 _STATE = state_file("video_cutter_media_root.txt")
 _PLAYER_PAGE = Path(__file__).resolve().parent / "player_component" / "index.html"
 _server: ThreadingHTTPServer | None = None

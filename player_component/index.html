@@ -68,9 +68,9 @@
   <div class="scrub-row">
     <input id="scrub" type="range" min="0" max="1000" value="0" step="1" />
   </div>
-  <div class="hint">左右同步播停与跳转。用下方进度条或 ±1s / ±15s 定位后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
+  <div class="hint">左右以 left 时间为准同步播停与跳转，便于对比。用下方进度条或 ±1s / ±15s 定位后点「设为起点 / 终点」。标「好」前确认：双手可见（单次消失≤10秒）且动作完整（起始→执行→结束）。</div>
   <script>
-    const PLAYER_VER = 6;
+    const PLAYER_VER = 8;
     const left = document.getElementById("vL");
     const right = document.getElementById("vR");
     const stage = document.getElementById("stage");
@@ -140,15 +140,28 @@
       beginSync();
       pinEndUntil = 0;
       resumeAfterSeek = false;
+      left.playbackRate = 1;
+      const f = follower();
+      if (f) {
+        f.playbackRate = 1;
+        if (Math.abs((f.currentTime || 0) - (left.currentTime || 0)) > 0.05) {
+          setTime(f, left.currentTime || 0);
+        }
+      }
       playSafe(left);
-      playSafe(follower());
+      playSafe(f);
       endSync();
       tick();
     }
     function pauseBoth() {
       beginSync();
       left.pause();
-      if (follower()) follower().pause();
+      const f = follower();
+      if (f) {
+        f.pause();
+        f.playbackRate = 1;
+        setTime(f, left.currentTime || 0);
+      }
       endSync();
       tick();
     }
@@ -373,26 +386,47 @@
     window.addEventListener("resize", setHeight);
     bindSync(left, right);
     bindSync(right, left);
-    window.setInterval(() => {
-      if (!hasRight || busySeek()) return;
-      if (!left.paused && right.paused) {
-        if (Math.abs((right.currentTime || 0) - (left.currentTime || 0)) > 0.35) {
-          setTime(right, left.currentTime || 0);
-        }
-        playSafe(right);
-        return;
-      }
-      if (left.paused && !right.paused) {
-        right.pause();
-        return;
-      }
-      if (left.paused || right.paused) return;
-      if (Math.abs((left.currentTime || 0) - (right.currentTime || 0)) > 0.35) {
+    function alignFollower(hard) {
+      const f = follower();
+      if (!f || !hasRight) return;
+      const lt = left.currentTime || 0;
+      const rt = f.currentTime || 0;
+      const drift = rt - lt;
+      if (hard || Math.abs(drift) > 0.2) {
         beginSync();
-        setTime(right, left.currentTime || 0);
+        setTime(f, lt);
+        f.playbackRate = 1;
         endSync();
+        return;
       }
-    }, 400);
+      if (Math.abs(drift) < 0.035) {
+        if (Math.abs(f.playbackRate - 1) > 0.001) f.playbackRate = 1;
+        return;
+      }
+      f.playbackRate = Math.max(0.9, Math.min(1.1, 1 - drift * 2.8));
+    }
+    function keepInSync() {
+      if (!hasRight || busySeek()) return;
+      const f = follower();
+      if (!f) return;
+      if (!left.paused && f.paused) {
+        if (Math.abs((f.currentTime || 0) - (left.currentTime || 0)) > 0.08) {
+          setTime(f, left.currentTime || 0);
+        }
+        f.playbackRate = 1;
+        playSafe(f);
+        return;
+      }
+      if (left.paused && !f.paused) {
+        f.pause();
+        f.playbackRate = 1;
+        setTime(f, left.currentTime || 0);
+        return;
+      }
+      if (left.paused || f.paused) return;
+      alignFollower(false);
+    }
+    window.setInterval(keepInSync, 80);
 
     playBtn.onclick = () => {
       if (seeking || skipTimer) {

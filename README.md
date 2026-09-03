@@ -75,6 +75,8 @@ streamlit run app.py
 
 浏览器打开终端里给出的地址（一般是 `http://localhost:8501`）。侧边栏可改数据根；也可设环境变量 `VIDEO_CUTTER_DATA_ROOT`。默认会在本机已有的 `baai_ego_task` 目录里挑一个（含常见 Linux 挂载盘和 `D:\baai_ego_task` 等）。
 
+每个 session 第一次打开会在后台生成 `divide/.preview/` 约 720p 预览（不改原视频、不挡界面）。之后播放、跳转走预览；**导出仍切原片**，时间轴一致。
+
 切片写到所选 `session_*/divide/`。
 
 Windows 额外注意：把 ffmpeg 的 `bin` 加到系统 PATH 后**新开一个终端**再启动。本机防火墙若拦截 `8501` / `18765` 端口，需允许 Python。
@@ -133,7 +135,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 2. 精确 seek 后硬件 H.264：NVIDIA `h264_nvenc` → Intel `h264_qsv` → AMD `h264_amf`，并用 `-frames:v` 卡死帧数
 3. 都没有或失败 → **CPU `libx264 -preset ultrafast`**，同样卡死帧数
 
-Windows 上中间文件写在目标盘同目录的 `.partial`，再改名为最终 mp4，避免先写 C 盘临时目录再整段拷贝。
+中间文件写在目标盘同目录的 `*.partial.mp4`，写完再改名为最终 mp4（Linux / Windows 都这样），避免先写系统盘临时目录再整段拷贝。
 
 
 需要强制某条路径时：

@@ -214,7 +214,9 @@ def cut_video(
     duration = n_frames / fps
     frame_limit = ["-vsync", "cfr", "-frames:v", str(n_frames)]
     src_arg = ffmpeg_arg(src)
-    work = dst.with_name(dst.name + ".partial")
+    # Must end in .mp4 so ffmpeg can pick the container. `.mp4.partial` is not Windows-only;
+    # it is a same-disk temp, but ffmpeg treats the last suffix as the format.
+    work = dst.with_name(dst.stem + ".partial.mp4")
     _unlink_if_exists(work)
     work_arg = ffmpeg_arg(work)
 
@@ -240,6 +242,8 @@ def cut_video(
             "copy",
             "-avoid_negative_ts",
             "make_zero",
+            "-f",
+            "mp4",
             work_arg,
         ]
         try:
@@ -261,6 +265,8 @@ def cut_video(
                 *frame_limit,
                 *extra,
                 "-an",
+                "-f",
+                "mp4",
                 work_arg,
             ]
             try:
@@ -287,6 +293,8 @@ def cut_video(
             "-threads",
             "0",
             "-an",
+            "-f",
+            "mp4",
             work_arg,
         ]
         _run(reenc_cmd)

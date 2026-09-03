@@ -19,6 +19,18 @@ import streamlit.components.v1 as components
 from cutter import append_cut_log, divide_output_root, export_segment
 from media_server import PORT, ensure_server
 from models import MAX_SEGMENT_SEC, Segment
+import importlib
+import preview as _preview
+
+# Streamlit 热加载可能仍缓存旧 preview.py，导致找不到新函数。
+if not hasattr(_preview, "preview_error"):
+    _preview = importlib.reload(_preview)
+from preview import (
+    preview_error,
+    preview_rel,
+    session_previews_ready,
+    start_previews_async,
+)
 from runtime import default_data_root, dir_is_writable, format_io_error, normalize_data_root
 from session_loader import discover_sessions
 from workstate import (
@@ -624,6 +636,15 @@ if hasattr(st, "fragment"):
     _annotation_ui = st.fragment(_annotation_ui)
 
 
+def _refresh_when_preview_ready(session) -> None:
+    if session_previews_ready(session) or preview_error(session):
+        st.rerun()
+
+
+if hasattr(st, "fragment"):
+    _refresh_when_preview_ready = st.fragment(run_every=4)(_refresh_when_preview_ready)
+
+
 def main() -> None:
     init_state()
 
@@ -715,6 +736,8 @@ def main() -> None:
         )
         session = by_path[chosen_path]
         output_root = divide_output_root(session)
+        if dir_is_writable(output_root):
+            start_previews_async(session)
 
         if st.session_state.loaded_session_path != str(session.path):
             prev_path = st.session_state.loaded_session_path
@@ -796,10 +819,30 @@ def main() -> None:
     with col_player:
         st.subheader("left / right 同步播放")
         if left_path.is_file():
+            play_left, play_right = left_rel, right_rel
+            fail_key = f"preview_fail::{session.path}"
+            if dir_is_writable(output_root) and not st.session_state.get(fail_key):
+                start_previews_async(session)
+                if session_previews_ready(session):
+                    play_left = preview_rel("left")
+                    if right_rel:
+                        play_right = preview_rel("right")
+                    st.caption("播放的是流畅预览；导出仍用原片，时间轴一致。")
+                else:
+                    err = preview_error(session)
+                    if err:
+                        st.session_state[fail_key] = True
+                        st.warning(f"预览生成失败，暂用原视频（可能卡顿）：{err}")
+                    else:
+                        st.info(
+                            "正在后台生成流畅预览（约 720p，每个 session 只需一次）。"
+                            "可先用原片标注，完成后面板会自动切换。"
+                        )
+                        _refresh_when_preview_ready(session)
             ensure_server(session.path)
             _player(
-                left_file=left_rel,
-                right_file=right_rel,
+                left_file=play_left,
+                right_file=play_right,
                 sid=session.session_id,
                 port=PORT,
                 seek_t=float(st.session_state.get("player_seek_t") or 0.0),
