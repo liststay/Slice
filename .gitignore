@@ -6,3 +6,7 @@ recover_remaining.pid
 recover_batch.log
 recover_batch_K.log
 sync_good_to_nas.log
+recover_K_drive.log
+recover_K_drive.pid
+align_K_drive.log
+align_K_drive.pid

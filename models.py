@@ -31,6 +31,8 @@ class Segment:
     t1: float
     quality: Quality = "good"
     note: str = ""
+    occlusion: bool = False
+    blur: bool = False
     segment_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     exported: bool = False
     output_dir: str = ""
@@ -71,6 +73,8 @@ class Segment:
             t1=float(data["t1"]),
             quality=data.get("quality", "good"),  # type: ignore[arg-type]
             note=str(data.get("note", "")),
+            occlusion=bool(data.get("occlusion", False)),
+            blur=bool(data.get("blur", False)),
             segment_id=str(data.get("segment_id", uuid.uuid4().hex[:8])),
             exported=bool(data.get("exported", False)),
             output_dir=str(data.get("output_dir") or ""),

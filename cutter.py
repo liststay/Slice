@@ -619,6 +619,8 @@ def export_segment(
         "imu_samples": imu_n,
         "cameras": [c for c in EXPORT_CAMERAS if (videos_out / f"{c}.mp4").is_file()],
         "operator_note": segment.note,
+        "occlusion": bool(segment.occlusion),
+        "blur": bool(segment.blur),
         "segment_id": segment.segment_id,
     }
     with (out_dir / "cut_info.json").open("w", encoding="utf-8") as f:

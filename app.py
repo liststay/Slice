@@ -59,6 +59,35 @@ def _fmt_time(t: float) -> str:
     return f"{m:02d}:{s:06.3f}"
 
 
+ISSUE_OCCLUSION = "遮挡"
+ISSUE_BLUR = "模糊"
+ISSUE_OPTIONS = [ISSUE_OCCLUSION, ISSUE_BLUR]
+
+
+def _issues_from_flags(occlusion: bool, blur: bool) -> list[str]:
+    issues: list[str] = []
+    if occlusion:
+        issues.append(ISSUE_OCCLUSION)
+    if blur:
+        issues.append(ISSUE_BLUR)
+    return issues
+
+
+def _flags_from_issues(issues: object) -> tuple[bool, bool]:
+    chosen = {str(x) for x in (issues or [])}
+    return ISSUE_OCCLUSION in chosen, ISSUE_BLUR in chosen
+
+
+def _video_rel(session, camera: str) -> str:
+    path = session.video_path(camera)
+    if not path.is_file():
+        return ""
+    try:
+        return str(path.relative_to(session.path)).replace("\\", "/")
+    except ValueError:
+        return path.name
+
+
 def init_state() -> None:
     if "segments" not in st.session_state:
         st.session_state.segments = []  # list[dict]
@@ -78,6 +107,8 @@ def init_state() -> None:
         st.session_state.quality_input = "good"
     if "note_input" not in st.session_state:
         st.session_state.note_input = ""
+    if "issues_input" not in st.session_state:
+        st.session_state.issues_input = []
     if "player_seek_t" not in st.session_state:
         st.session_state.player_seek_t = 0.0
     if "player_seek_n" not in st.session_state:
@@ -110,6 +141,9 @@ def _start_edit(segment_id: str) -> None:
         st.session_state.action_zh_input = str(d.get("action_zh") or "")
         st.session_state.quality_input = d.get("quality") or "good"
         st.session_state.note_input = str(d.get("note") or "")
+        st.session_state.issues_input = _issues_from_flags(
+            bool(d.get("occlusion")), bool(d.get("blur"))
+        )
         _queue_player_seek(float(d["t0"]))
         break
 
@@ -146,6 +180,7 @@ def _submit_segment() -> None:
     action_zh = str(st.session_state.get("action_zh_input") or "").strip()
     quality = st.session_state.get("quality_input") or "good"
     note = str(st.session_state.get("note_input") or "").strip()
+    occlusion, blur = _flags_from_issues(st.session_state.get("issues_input"))
     editing_id = st.session_state.get("editing_id")
     seg = Segment(
         action_zh=action_zh,
@@ -153,6 +188,8 @@ def _submit_segment() -> None:
         t1=t1,
         quality=quality,  # type: ignore[arg-type]
         note=note,
+        occlusion=occlusion,
+        blur=blur,
     )
     if editing_id:
         seg.segment_id = str(editing_id)
@@ -242,18 +279,23 @@ def _delete_segment(segment_id: str) -> None:
 
 
 def _form_state() -> dict:
+    occlusion, blur = _flags_from_issues(st.session_state.get("issues_input"))
     return {
         "t0": float(st.session_state.get("t0_input") or 0.0),
         "t1": float(st.session_state.get("t1_input") or 0.0),
         "action_zh": str(st.session_state.get("action_zh_input") or ""),
         "quality": st.session_state.get("quality_input") or "good",
         "note": str(st.session_state.get("note_input") or ""),
+        "occlusion": occlusion,
+        "blur": blur,
         "editing_id": st.session_state.get("editing_id"),
     }
 
 
 def _form_dirty(form: dict, duration: float) -> bool:
     if (form.get("action_zh") or "").strip() or (form.get("note") or "").strip():
+        return True
+    if form.get("occlusion") or form.get("blur"):
         return True
     if form.get("editing_id"):
         return True
@@ -325,9 +367,16 @@ def _session_label(s) -> str:
 
 
 def _segment_extra(d: dict) -> str:
+    parts: list[str] = []
+    if d.get("occlusion"):
+        parts.append("遮挡")
+    if d.get("blur"):
+        parts.append("模糊")
     note = str(d.get("note") or "").strip()
     if note:
-        return note
+        parts.append(note)
+    if parts:
+        return " · ".join(parts)
     out = str(d.get("output_dir") or "").strip()
     if out:
         return Path(out).name
@@ -427,7 +476,13 @@ def _annotation_ui(session, duration: float, output_root: Path) -> None:
         format_func=lambda x: "好" if x == "good" else "坏",
         key="quality_input",
     )
-    st.text_area("备注", height=80, key="note_input")
+    st.multiselect(
+        "画面问题（可多选）",
+        ISSUE_OPTIONS,
+        key="issues_input",
+        help="记录这段视频是否有遮挡或模糊，可多选，也可都不选。",
+    )
+    st.text_area("其他备注", height=80, key="note_input")
 
     save_label = "保存修改" if editing_id else "加入片段列表"
     st.button(
@@ -551,8 +606,9 @@ def main() -> None:
 
     st.title("Ego 视频切分工具")
     st.caption(
-        "以 left.mp4 为主视角标注；导出时按帧切 left / right 视频和 timestamps，"
-        "并按同一时间窗裁切 IMU；calibrations 整份拷贝。切片写入当前 session 的 divide/。"
+        "左右视频并排同步播放；以 left 为主视角标注起止。"
+        "导出时按帧切 left / right 视频和 timestamps，并按同一时间窗裁切 IMU；"
+        "calibrations 整份拷贝。切片写入当前 session 的 divide/。"
     )
     st.warning(f"**{CUT_RULES_TITLE}**\n{CUT_RULES_MD}")
 
@@ -652,6 +708,9 @@ def main() -> None:
             st.session_state.action_zh_input = str(form.get("action_zh") or "")
             st.session_state.quality_input = form.get("quality") or "good"
             st.session_state.note_input = str(form.get("note") or "")
+            st.session_state.issues_input = _issues_from_flags(
+                bool(form.get("occlusion")), bool(form.get("blur"))
+            )
             st.session_state.editing_id = None
             st.session_state.last_player_n = None
             st.session_state.player_seek_t = 0.0
@@ -676,17 +735,12 @@ def main() -> None:
         st.markdown(
             f"**进度**: {cut_status_label(live_exported, live_draft, session.keep_whole, session.reject_whole)}"
         )
-        play_cam = st.selectbox(
-            "播放相机（导出切 left / right 视频、timestamps 和 IMU）",
-            session.cameras_present or ["left"],
-            index=(session.cameras_present or ["left"]).index("left")
-            if "left" in (session.cameras_present or ["left"])
-            else 0,
-        )
 
     duration = max(session.duration_sec, 0.1)
     st.session_state._duration = duration
-    video_path = session.video_path(play_cam)
+    left_rel = _video_rel(session, "left")
+    right_rel = _video_rel(session, "right")
+    left_path = session.video_path("left")
 
     live_exported = sum(1 for d in st.session_state.segments if d.get("exported"))
     live_draft = sum(1 for d in st.session_state.segments if not d.get("exported"))
@@ -710,19 +764,22 @@ def main() -> None:
 
     col_player, col_form = st.columns([7, 3], gap="large")
     with col_player:
-        st.subheader(f"{play_cam}.mp4")
-        if video_path.is_file():
-            ensure_server(video_path.parent)
+        st.subheader("left / right 同步播放")
+        if left_path.is_file():
+            ensure_server(session.path)
             _player(
-                file=f"{play_cam}.mp4",
+                left_file=left_rel,
+                right_file=right_rel,
                 sid=session.session_id,
                 port=PORT,
                 seek_t=float(st.session_state.get("player_seek_t") or 0.0),
                 seek_n=int(st.session_state.get("player_seek_n") or 0),
                 key="cutter_player",
             )
+            if not right_rel:
+                st.caption("未找到 right.mp4，仅播放 left。")
         else:
-            st.error(f"找不到视频: {video_path}")
+            st.error(f"找不到视频: {left_path}")
     with col_form:
         _annotation_ui(session, duration, output_root)
 

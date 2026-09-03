@@ -13,6 +13,18 @@ from models import Segment
 DRAFT_FILENAME = "draft_segments.json"
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(path)
+    except OSError:
+        path.write_text(text, encoding="utf-8")
+        tmp.unlink(missing_ok=True)
+
+
 def draft_path(session_dir: Path) -> Path:
     return session_dir / "divide" / DRAFT_FILENAME
 
@@ -88,9 +100,7 @@ def save_review(
         "note": note,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    _write_json(path, payload)
     return path
 
 
@@ -165,9 +175,7 @@ def save_draft(
         "segments": segments,
         "form": form or {},
     }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    _write_json(path, payload)
     return path
 
 
@@ -209,6 +217,8 @@ def list_exported_segments(session_dir: Path) -> list[dict[str, Any]]:
                 t1=t1,
                 quality=quality,  # type: ignore[arg-type]
                 note=str(data.get("operator_note") or ""),
+                occlusion=bool(data.get("occlusion", False)),
+                blur=bool(data.get("blur", False)),
                 segment_id=sid,
                 exported=True,
                 output_dir=str(folder),
