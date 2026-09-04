@@ -10,3 +10,9 @@ recover_K_drive.log
 recover_K_drive.pid
 align_K_drive.log
 align_K_drive.pid
+reexport_gop30_names_remaining.txt
+reexport_gop30_names.txt
+
+rsync_cuts_to_nas.log
+
+reexport_gop30_names_34C.txt

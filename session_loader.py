@@ -124,7 +124,8 @@ def load_session(session_path: Path | str) -> SessionInfo:
             meta = json.load(f)
 
     cameras = [c for c in CAMERAS if (path / "videos" / f"{c}.mp4").is_file()]
-    left = path / "videos" / "left.mp4"
+    recovered_left = path / "videos_recovered" / "left.mp4"
+    left = recovered_left if recovered_left.is_file() else (path / "videos" / "left.mp4")
     fps_meta = float(meta.get("fps") or 30.0)
     fps, duration, frame_count = _probe_video(left)
     if fps <= 0:

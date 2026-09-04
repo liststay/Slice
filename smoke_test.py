@@ -51,7 +51,10 @@ def main() -> None:
         counts = info.get("expected_frame_counts") or {}
         video_counts = {}
         ends = {}
-        for cam in ("left", "right"):
+        for cam in ("left", "right", "bright", "bleft"):
+            src_v = session.video_path(cam)
+            if not src_v.is_file():
+                continue
             assert (out / "videos" / f"{cam}.mp4").is_file(), f"missing video {cam}"
             assert (out / "timestamps" / f"{cam}_timestamps.txt").is_file(), f"missing ts {cam}"
             expected = int(counts.get(cam, info["expected_frames"]))
@@ -68,10 +71,10 @@ def main() -> None:
             last_ts = float(ts_lines[-1].split()[1])
             assert first_ts > 1e6, f"{cam} timestamp should be absolute, got {first_ts}"
             ends[cam] = (first_ts, last_ts, len(ts_lines))
-        assert not (out / "videos" / "bright.mp4").exists()
-        assert not (out / "videos" / "bleft.mp4").exists()
-        assert abs(ends["left"][0] - ends["right"][0]) < 1e-6, ends
-        assert abs(ends["left"][1] - ends["right"][1]) < 1e-6, ends
+        names = list(ends)
+        for cam in names[1:]:
+            assert abs(ends["left"][0] - ends[cam][0]) < 1e-6, ends
+            assert abs(ends["left"][1] - ends[cam][1]) < 1e-6, ends
         assert (out / "imu" / "imu0.csv").is_file()
         imu_lines = [
             ln
@@ -89,9 +92,29 @@ def main() -> None:
             assert (out / "imu" / "imu0.csv").stat().st_size < src_imu.stat().st_size
         src_meta = SESSION / "meta.json"
         if src_meta.is_file():
-            assert (out / "meta.json").read_bytes() == src_meta.read_bytes()
+            src_obj = json.loads(src_meta.read_text(encoding="utf-8"))
+            cut_meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
+            expected_left = int(counts.get("left", info["expected_frames"]))
+            assert cut_meta.get("synced_frames") == expected_left
+            assert cut_meta.get("total_written_frames") == expected_left
+            left_topic = (cut_meta.get("topics") or {}).get("left") or {}
+            if left_topic:
+                assert left_topic.get("written_frames") == expected_left
+            assert cut_meta.get("imu", {}).get("written_samples") == len(imu_lines)
+            after_src = json.loads(src_meta.read_text(encoding="utf-8"))
+            assert after_src.get("synced_frames") == src_obj.get("synced_frames")
+            if (
+                src_obj.get("synced_frames")
+                and session.duration_sec > t1 + 0.5
+            ):
+                assert cut_meta["synced_frames"] < src_obj["synced_frames"]
         assert info.get("imu_samples") == len(imu_lines)
-        assert not (out / "audio").exists()
+        if session.audio_wav.is_file():
+            assert (out / "audio" / "audio.wav").is_file()
+            assert info.get("audio") is True
+        else:
+            assert info.get("audio") is False
+            assert not (out / "audio" / "audio.wav").exists()
         assert (out / "calibrations").is_dir()
         assert (out / "meta.json").is_file()
         assert (out / "cut_info.json").is_file()

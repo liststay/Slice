@@ -1,6 +1,6 @@
 # Ego 视频切分工具
 
-人工可视化切分多路相机 session：并排播放 `left.mp4` / `right.mp4` 同步标注起止，按帧导出 left / right 切片到当前 session 下的 `divide/`。原 videos / timestamps / imu / audio / calibrations 只读保留。
+人工可视化切分多路相机 session：并排播放 `left.mp4` / `right.mp4` 同步标注起止，按帧导出四路切片到当前 session 下的 `divide/`。原 videos / timestamps / imu / audio / calibrations 只读保留。
 
 ## 环境与依赖
 
@@ -121,9 +121,9 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 - 编辑草稿片段时，播放器跳到该段起点
 - 界面顶部与右侧表单展示纳入标准：双手可见、动作语义完整，两项都达标才能标「好」
 - 播放器并排显示 left / right，同步播放、暂停和跳转；标注时可勾选「遮挡 / 模糊」
-- 同时切分：left / right 两路视频、timestamps、IMU（按对齐后的绝对时间窗裁切），并原样拷贝 `meta.json` 与 calibrations（不处理 bright / bleft / audio）
+- 同时切分：left / right / bright / bleft 四路视频、timestamps、IMU 与音频（按对齐后的绝对时间窗裁切），按切后帧数改写切片 `meta.json`，并原样拷贝 calibrations（不改原始 session 的 `meta.json`）
 - 视频按帧号区间切分（精确 seek + `-frames:v` 卡死帧数），timestamps 保留源文件中的绝对时间戳
-- left / right 按绝对时间对齐：切后两路首帧、尾帧时间戳相同（原始数据可能差一帧）
+- 各路相机按绝对时间对齐：切后首帧、尾帧时间戳相同（原始数据可能差一帧）
 - 每段 `cut_info.json`，以及 `divide/logs/cut_history.jsonl`
 - 同一 session 可标注并导出多段
 
@@ -197,7 +197,7 @@ python align_cut_exports.py --root /mnt/nas/synnas/ego/baai_ego_task
 python align_cut_exports.py --cut /path/to/divide/good/session_xxx_动作_时间
 ```
 
-会原地对齐 left/right 首尾时间戳，按同一时间窗裁切 `imu/`，并更新 `cut_info.json`（不备份）。
+会原地对齐各路相机首尾时间戳，按同一时间窗裁切 `imu/`，并更新 `cut_info.json`（不备份）。
 
 ```bash
 cd /path/to/video_cutter
@@ -212,9 +212,10 @@ session_xxx/
   divide/
     good/
       session_xxx_拿杯子_20260827155901/
-        videos/{left,right}.mp4
-        timestamps/{left,right}_timestamps.txt
+        videos/{left,right,bright,bleft}.mp4
+        timestamps/{left,right,bright,bleft}_timestamps.txt
         imu/imu0.csv
+        audio/audio.wav
         calibrations/
         meta.json
         cut_info.json

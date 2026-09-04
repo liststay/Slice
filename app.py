@@ -651,8 +651,9 @@ def main() -> None:
     st.title("Ego 视频切分工具")
     st.caption(
         "左右视频并排同步播放；以 left 为主视角标注起止。"
-        "导出时按帧切 left / right 视频和 timestamps，并按同一时间窗裁切 IMU；"
-        "calibrations 整份拷贝。切片写入当前 session 的 divide/。"
+        "导出时按帧切 left / right / bright / bleft 视频和 timestamps，"
+        "并按同一时间窗裁切 IMU 与音频；calibrations 整份拷贝。"
+        "切片写入当前 session 的 divide/。"
     )
     st.warning(f"**{CUT_RULES_TITLE}**\n{CUT_RULES_MD}")
 

@@ -484,6 +484,63 @@ def cut_imu_dir(src_dir: Path, dst_dir: Path, ts_start: float, ts_end: float) ->
     return n_main
 
 
+def cut_audio(src: Path, dst: Path, t0: float, duration: float) -> bool:
+    """Cut wav to [t0, t0+duration), same wall-clock window as the video/IMU cut."""
+    if not src.is_file() or duration <= 0:
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    work = dst.with_name(dst.stem + ".partial.wav")
+    _unlink_if_exists(work)
+    t0 = max(0.0, float(t0))
+    src_arg = ffmpeg_arg(src)
+    work_arg = ffmpeg_arg(work)
+
+    def _ok() -> bool:
+        try:
+            return work.is_file() and work.stat().st_size > 44
+        except OSError:
+            return False
+
+    # -ss after -i: sample-accurate for PCM wav.
+    copy_cmd = [
+        *ffmpeg_head(),
+        "-i",
+        src_arg,
+        "-ss",
+        f"{t0:.6f}",
+        "-t",
+        f"{duration:.6f}",
+        "-c",
+        "copy",
+        work_arg,
+    ]
+    try:
+        _run(copy_cmd)
+    except RuntimeError:
+        _unlink_if_exists(work)
+    if not _ok():
+        _unlink_if_exists(work)
+        reenc_cmd = [
+            *ffmpeg_head(),
+            "-i",
+            src_arg,
+            "-ss",
+            f"{t0:.6f}",
+            "-t",
+            f"{duration:.6f}",
+            "-c:a",
+            "pcm_s16le",
+            work_arg,
+        ]
+        _run(reenc_cmd)
+        if not _ok():
+            _unlink_if_exists(work)
+            raise RuntimeError(f"audio cut failed: {src}")
+    replace_file(work, dst)
+    _unlink_if_exists(work)
+    return True
+
+
 def append_cut_log(log_path: Path, record: dict[str, Any]) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
@@ -502,10 +559,10 @@ def export_segment(
 ) -> Path:
     """
     Export one segment bundle under session_*/divide/good|bad/...
-    Cuts left/right videos by frame index; writes absolute timestamps.
-    Trims imu/ to the aligned absolute time window. Copies original meta.json
-    unchanged. Does not cut audio.
-    Does not modify original session files.
+    Cuts all present cameras (left/right/bright/bleft) by frame index so first
+    and last timestamps match; writes absolute timestamps.
+    Trims imu/ and audio/ to the aligned absolute time window. Writes meta.json
+    with cut-sized frame counts (source session meta.json is not modified).
     """
     errors = segment.validate()
     if errors:
@@ -543,9 +600,15 @@ def export_segment(
     i0 = max(0, min(i0, len(left_ts) - 1))
 
     cam_ts: dict[str, list[tuple[int, float]]] = {"left": left_ts}
+    export_cams: list[str] = ["left"]
     for cam in EXPORT_CAMERAS:
         if cam == "left":
             continue
+        has_video = session.video_path(cam).is_file()
+        has_ts = session.timestamps_path(cam).is_file()
+        if not has_video and not has_ts:
+            continue
+        export_cams.append(cam)
         rows = load_timestamps(session.timestamps_path(cam))
         if rows:
             cam_ts[cam] = rows
@@ -584,6 +647,8 @@ def export_segment(
         src_v = session.video_path(cam)
         if not src_v.is_file():
             return
+        if cam not in ranges and cam in cam_ts:
+            return
         start, _, n, t0_cam = _cut_range(cam)
         cut_video(
             src_v,
@@ -594,20 +659,41 @@ def export_segment(
             fps=session.fps,
         )
 
+    def _write_ts_rows(
+        dst: Path, rows: list[tuple[int, float]], start: int, end: int
+    ) -> int:
+        chosen = rows[start:end]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with dst.open("w", encoding="utf-8") as fout:
+            for n, (_idx, ts) in enumerate(chosen):
+                fout.write(f"{n} {float(ts):.9f}\n")
+        return len(chosen)
+
     def _cut_ts(cam: str) -> tuple[str, int | None]:
-        src_ts = session.timestamps_path(cam)
-        if not src_ts.is_file():
+        if cam not in ranges and cam != "left":
             return cam, None
         start, end, _, _ = _cut_range(cam)
-        n = cut_timestamps_by_frame_range(
-            src_ts, ts_out / f"{cam}_timestamps.txt", start, end
-        )
-        return cam, n
+        dst = ts_out / f"{cam}_timestamps.txt"
+        src_ts = session.timestamps_path(cam)
+        if src_ts.is_file():
+            n = cut_timestamps_by_frame_range(src_ts, dst, start, end)
+            return cam, n
+        rows = cam_ts.get(cam)
+        if not rows:
+            return cam, None
+        return cam, _write_ts_rows(dst, rows, start, end)
+
+    duration_sec = max(0.0, float(ts_end) - float(ts_start))
+    if duration_sec <= 0:
+        duration_sec = segment.duration()
+    audio_t0 = (
+        max(0.0, float(ts_start) - float(left_ts[0][1])) if left_ts else max(0.0, segment.t0)
+    )
 
     ts_counts: dict[str, int] = {}
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futs = [pool.submit(_cut_video, cam) for cam in EXPORT_CAMERAS]
-        ts_futs = [pool.submit(_cut_ts, cam) for cam in EXPORT_CAMERAS]
+        futs = [pool.submit(_cut_video, cam) for cam in export_cams]
+        ts_futs = [pool.submit(_cut_ts, cam) for cam in export_cams]
         calib_fut = None
         if session.calibrations_dir.is_dir():
             calib_fut = pool.submit(
@@ -619,6 +705,15 @@ def export_segment(
             imu_fut = pool.submit(
                 cut_imu_dir, imu_dir, out_dir / "imu", ts_start, ts_end
             )
+        audio_fut = None
+        if session.audio_wav.is_file():
+            audio_fut = pool.submit(
+                cut_audio,
+                session.audio_wav,
+                out_dir / "audio" / "audio.wav",
+                audio_t0,
+                duration_sec,
+            )
         for fut in futs:
             fut.result()
         for fut in ts_futs:
@@ -628,14 +723,33 @@ def export_segment(
         if calib_fut is not None:
             calib_fut.result()
         imu_n = imu_fut.result() if imu_fut is not None else 0
-
-    duration_sec = max(0.0, float(ts_end) - float(ts_start))
-    if duration_sec <= 0:
-        duration_sec = segment.duration()
+        audio_ok = bool(audio_fut.result()) if audio_fut is not None else False
 
     src_meta = session.path / "meta.json"
-    if src_meta.is_file():
-        shutil.copy2(src_meta, out_dir / "meta.json")
+    frame_counts = {cam: int(n) for cam, n in ts_counts.items()}
+    if not frame_counts:
+        frame_counts = {"left": int(n_frames)}
+    span_sec = max(0.0, float(common_last) - float(common_first))
+    audio_path = out_dir / "audio" / "audio.wav"
+    audio_size = None
+    audio_duration = None
+    if audio_ok and audio_path.is_file():
+        audio_duration = duration_sec
+        try:
+            audio_size = int(audio_path.stat().st_size)
+        except OSError:
+            audio_size = None
+    write_cut_meta(
+        src_meta,
+        out_dir / "meta.json",
+        fps=session.fps,
+        frame_counts=frame_counts,
+        duration_sec=duration_sec,
+        span_sec=span_sec,
+        imu_samples=imu_n if imu_fut is not None else None,
+        audio_duration=audio_duration,
+        audio_size=audio_size,
+    )
 
     cut_info = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -657,7 +771,8 @@ def export_segment(
         "abs_first_last": [common_first, common_last],
         "timestamp_counts": ts_counts,
         "imu_samples": imu_n,
-        "cameras": [c for c in EXPORT_CAMERAS if (videos_out / f"{c}.mp4").is_file()],
+        "audio": audio_ok,
+        "cameras": [c for c in export_cams if (videos_out / f"{c}.mp4").is_file()],
         "operator_note": segment.note,
         "occlusion": bool(segment.occlusion),
         "blur": bool(segment.blur),
@@ -683,6 +798,58 @@ def export_segment(
     append_cut_log(output_root / "logs" / "cut_history.jsonl", log_record)
 
     return out_dir
+
+
+def write_cut_meta(
+    src_meta: Path,
+    dst_meta: Path,
+    *,
+    fps: float,
+    frame_counts: dict[str, int],
+    duration_sec: float,
+    span_sec: float,
+    imu_samples: int | None,
+    audio_duration: float | None,
+    audio_size: int | None,
+) -> None:
+    """Write a cut-sized meta.json. Does not modify the source session file."""
+    if not src_meta.is_file():
+        return
+    meta = json.loads(src_meta.read_text(encoding="utf-8"))
+    ref_frames = int(
+        frame_counts.get("left") or next(iter(frame_counts.values()), 0)
+    )
+    meta["duration_sec"] = round(float(duration_sec), 6)
+    meta["synced_frames"] = ref_frames
+    meta["span_sec"] = round(float(span_sec), 6)
+    if meta.get("total_written_frames") is not None:
+        meta["total_written_frames"] = ref_frames
+    if fps > 0 and span_sec > 0:
+        meta["avg_fps_per_cam"] = round(ref_frames / span_sec, 4)
+    elif fps > 0 and duration_sec > 0:
+        meta["avg_fps_per_cam"] = round(ref_frames / duration_sec, 4)
+    topics = meta.get("topics")
+    if isinstance(topics, dict):
+        for cam, info in topics.items():
+            if not isinstance(info, dict):
+                continue
+            info["written_frames"] = int(frame_counts.get(cam, 0))
+    imu = meta.get("imu")
+    if isinstance(imu, dict) and imu_samples is not None:
+        imu["written_samples"] = int(imu_samples)
+    audio = meta.get("audio")
+    if isinstance(audio, dict):
+        if audio_duration is not None:
+            audio["duration_sec"] = round(float(audio_duration), 6)
+        if audio_size is not None:
+            audio["file_size_bytes"] = int(audio_size)
+    rec = meta.get("recovery")
+    if isinstance(rec, dict):
+        rec["frame_counts"] = {k: int(v) for k, v in frame_counts.items()}
+        rec["frame_ranges"] = {cam: [0, int(n)] for cam, n in frame_counts.items()}
+    dst_meta.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def export_segments(

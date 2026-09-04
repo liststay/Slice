@@ -2,6 +2,8 @@
 
 Use this on divide/ outputs (local or NAS). Does not touch original sessions.
 Rewrites timestamps/ and imu/ in place (no file backup). Does not modify meta.json.
+Also trims cut videos so nb_frames matches timestamp rows (old NVENC GOP=250
+re-encodes often kept extra frames).
 
 Usage:
   python align_cut_exports.py --root /mnt/nas/synnas/ego/baai_ego_task
@@ -173,36 +175,57 @@ def align_one(cut_dir: Path, *, dry_run: bool, force: bool) -> str:
         aligned_times[-1] + (1.0 / max(fps, 1.0)) if aligned_times else 0.0
     )
     need_imu = bool(aligned_times) and imu_needs_trim(cut_dir, ts_start, ts_end)
-    if not need_align and not need_imu and not force:
+
+    video_n: dict[str, int | None] = {}
+    need_frames = False
+    frame_notes: list[str] = []
+    for cam, rows in cam_ts.items():
+        a, b = ranges.get(cam, (0, len(rows)))
+        target = b - a
+        video = cut_dir / "videos" / f"{cam}.mp4"
+        got = probe_nb_frames(video) if video.is_file() else None
+        video_n[cam] = got
+        if got is not None and got != target:
+            need_frames = True
+            frame_notes.append(f"{cam} {got}v/{target}t")
+
+    if not need_align and not need_imu and not need_frames and not force:
         return "skip (timestamps aligned)"
 
     actions = []
     if need_align:
-        actions.append("timestamps+video")
+        actions.append("timestamps")
+    if need_frames:
+        actions.append("video-frames")
     if need_imu:
         actions.append("imu")
     if dry_run:
         extra = []
         for cam, (a, b) in ranges.items():
             extra.append(f"{cam}[{a}:{b}]/{len(cam_ts[cam])}")
+        extra.extend(frame_notes)
         return f"would fix ({', '.join(actions)}) " + " ".join(extra)
 
     counts: dict[str, int] = {}
     for cam, rows in cam_ts.items():
         a, b = ranges.get(cam, (0, len(rows)))
         times = [ts for _, ts in rows[a:b]]
+        video = cut_dir / "videos" / f"{cam}.mp4"
+        got = video_n.get(cam)
+        # Video shorter than timestamps: drop extra tail timestamps.
+        if got is not None and 0 < got < len(times):
+            times = times[:got]
+            a = 0
         write_timestamp_times(
             cut_dir / "timestamps" / f"{cam}_timestamps.txt", times
         )
         counts[cam] = len(times)
-        video = cut_dir / "videos" / f"{cam}.mp4"
-        if need_align and video.is_file() and times:
-            got = probe_nb_frames(video)
+        if video.is_file() and times and (need_align or need_frames or force):
             if got == len(times) and a == 0:
                 continue
             if got == len(times):
                 continue
-            trim_recovered_mp4(video, video, a, len(times), fps)
+            trim_recovered_mp4(video, video, a if need_align else 0, len(times), fps)
 
     times = [ts for _, ts in cam_ts[ref][ranges[ref][0] : ranges[ref][1]]]
     duration_sec = probe_duration_sec(cut_dir / "videos" / f"{ref}.mp4")
@@ -226,7 +249,7 @@ def align_one(cut_dir: Path, *, dry_run: bool, force: bool) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Align cut-bundle timestamps and trim imu/. Does not modify meta.json."
+        description="Align cut-bundle timestamps, match video frame counts, trim imu/. Does not modify meta.json."
     )
     parser.add_argument("--root", type=Path, help="Scan divide/ cut folders under this tree")
     parser.add_argument("--cut", type=Path, help="One exported cut folder")
