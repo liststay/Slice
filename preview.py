@@ -77,7 +77,7 @@ def _encode_one(src: Path, dst: Path) -> None:
         ),
         (
             "libx264",
-            ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", "0", "-pix_fmt", "yuv420p"],
+            ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", "0", "-pix_fmt", "yuv420p", "-keyint_min", "30", "-sc_threshold", "0"],
         ),
     ]
     last_err = ""
@@ -94,6 +94,8 @@ def _encode_one(src: Path, dst: Path) -> None:
             *extra,
             "-g",
             "30",
+            "-bf",
+            "0",
             "-movflags",
             "+faststart",
             "-f",

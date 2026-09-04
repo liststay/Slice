@@ -131,9 +131,11 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 顺序始终是卡死输出帧数（与标注帧区间、timestamps 行数一致）：
 
-1. **stream copy**（仅当输出帧数正好等于目标才保留）
+1. **stream copy**（仅当输出帧数正好等于目标才保留；GOP 与原片相同）
 2. 精确 seek 后硬件 H.264：NVIDIA `h264_nvenc` → Intel `h264_qsv` → AMD `h264_amf`，并用 `-frames:v` 卡死帧数
 3. 都没有或失败 → **CPU `libx264 -preset ultrafast`**，同样卡死帧数
+
+原片 GOP=30（约 1s @ 30fps）、无 B 帧。copy 保持原 GOP；任何重编码都显式 `-g 30 -bf 0`（libx264 另加 `-keyint_min 30 -sc_threshold 0`），不用 ffmpeg/NVENC 默认 GOP=250。
 
 中间文件写在目标盘同目录的 `*.partial.mp4`，写完再改名为最终 mp4（Linux / Windows 都这样），避免先写系统盘临时目录再整段拷贝。
 

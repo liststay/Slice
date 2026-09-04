@@ -35,6 +35,10 @@ DIVIDE_DIR_NAME = "divide"
 _ffmpeg_encoders: set[str] | None = None
 _failed_hw: set[str] = set()
 _ACCURATE_PREROLL_SEC = 5.0
+# Capture GOP is 30 (~1s @ 30fps), I/P only. Stream copy keeps source GOP.
+# ffmpeg/NVENC default is 250 — every re-encode must set this explicitly.
+_GOP_ARGS = ["-g", "30", "-bf", "0"]
+_X264_GOP_ARGS = [*_GOP_ARGS, "-keyint_min", "30", "-sc_threshold", "0"]
 
 
 def _run(cmd: list[str]) -> None:
@@ -86,22 +90,22 @@ def _hw_encoder_attempts() -> list[tuple[str, list[str]]]:
         (
             "h264_nvenc",
             "h264_nvenc_p1",
-            ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p"],
+            ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p", *_GOP_ARGS],
         ),
         (
             "h264_nvenc",
             "h264_nvenc_fast",
-            ["-c:v", "h264_nvenc", "-preset", "fast", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p"],
+            ["-c:v", "h264_nvenc", "-preset", "fast", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p", *_GOP_ARGS],
         ),
         (
             "h264_qsv",
             "h264_qsv",
-            ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "18"],
+            ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "18", *_GOP_ARGS],
         ),
         (
             "h264_amf",
             "h264_amf",
-            ["-c:v", "h264_amf", "-quality", "speed", "-qp_i", "18", "-qp_p", "18"],
+            ["-c:v", "h264_amf", "-quality", "speed", "-qp_i", "18", "-qp_p", "18", *_GOP_ARGS],
         ),
     ]
     picked: list[tuple[str, list[str]]] = []
@@ -292,6 +296,7 @@ def cut_video(
             "18",
             "-threads",
             "0",
+            *_X264_GOP_ARGS,
             "-an",
             "-f",
             "mp4",
